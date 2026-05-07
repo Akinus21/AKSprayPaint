@@ -100,7 +100,7 @@ fn rgb_to_oklch(p: &Rgb<u8>) -> Oklch<f32> {
 
 fn oklch_to_rgb(c: &Oklch<f32>) -> Rgb<u8> {
     let linear: Srgb<f32> = Srgb::from_color(*c);
-    let gamma = linear.into_linear().into_encoding();
+    let gamma: Srgb<f32> = linear.into_linear().into_encoding();
     Rgb([
         (gamma.red * 255.0).round().clamp(0.0, 255.0) as u8,
         (gamma.green * 255.0).round().clamp(0.0, 255.0) as u8,
