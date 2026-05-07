@@ -153,8 +153,8 @@ fn build_anchor_mappings(source: &MatugenTheme, target: &NoctaliaTheme) -> Vec<(
     source_colors.into_iter().map(|src| {
         let best_target = target_colors.iter()
             .min_by(|a, b| {
-                let da = hue_dist(src.hue, *a);
-                let db = hue_dist(src.hue, *b);
+                let da = hue_dist(src.hue, a.hue);
+                let db = hue_dist(src.hue, b.hue);
                 da.partial_cmp(&db).unwrap()
             })
             .copied()
