@@ -17,16 +17,24 @@ const KMEANS_ITER: usize = 12;
 const MAX_SAMPLES: usize = 40_000;
 
 /// Controls sharpness of region boundaries in the transfer.
-/// Higher → harder edges, lower → softer blending.
+/// Higher → harder edges, lower → softer blending. Range 4–16.
 const SHARPNESS: f32 = 8.0;
 
 /// Avoid division by zero.
 const EPSILON: f32 = 1e-6;
 
-/// Chroma below this is considered "achromatic" (grey/near-black/near-white).
-/// These clusters are matched by lightness, not hue, because they have no
-/// meaningful hue to compare.
-const ACHROMATIC_THRESHOLD: f32 = 0.06;
+/// Chroma below this is treated as "achromatic" for matching purposes.
+/// These clusters/theme-colors are matched by lightness rank, not hue,
+/// because near-grey hue readings are dominated by noise.
+/// Raised to 0.08 to capture slightly-tinted darks (vignette corners etc.)
+const ACHROMATIC_THRESHOLD: f32 = 0.08;
+
+/// Pixels whose final blended lightness falls below this are clamped to very
+/// low chroma. Near-black hue readings are unreliable regardless of how the
+/// cluster was classified — suppressing chroma prevents colour bleed into
+/// dark gradient corners.
+const DARK_CHROMA_CUTOFF_L: f32 = 0.12;
+const DARK_CHROMA_MAX: f32 = 0.04;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PUBLIC API
@@ -39,37 +47,31 @@ const ACHROMATIC_THRESHOLD: f32 = 0.06;
 /// # Algorithm (three stages)
 ///
 /// ## Stage 1 — Cluster
-/// Run k-means on a sampled subset of pixels in Oklch space to find K dominant
-/// colors. Oklch is perceptually uniform, so clusters that look visually
-/// distinct to the eye are numerically distinct here.
+/// Sample up to MAX_SAMPLES pixels from the image and run k-means in Oklch
+/// space to find K dominant colors. Oklch is perceptually uniform: visually
+/// distinct colors are numerically far apart, so cluster boundaries align with
+/// what the eye actually sees as separate color regions.
 ///
 /// ## Stage 2 — Match (hue-family + lightness)
-/// Split both the extracted clusters and the theme palette into two groups:
+/// Partition clusters and theme colors into two groups:
 ///
-///   **Achromatic** (chroma < threshold): grey, near-black, near-white.
-///   Matched by lightness rank: darkest achromatic cluster → darkest
-///   achromatic theme color. These are the background, shadow, and outline
-///   regions. They have no reliable hue so we don't try to use one.
+///   **Achromatic** (chroma < ACHROMATIC_THRESHOLD): near-blacks, near-whites,
+///   greys, and slightly-tinted darks (vignette corners, dark outlines).
+///   Matched by lightness rank — darkest achromatic cluster → darkest
+///   achromatic theme color. Hue is not used here because near-grey hue
+///   readings are noise-dominated.
 ///
-///   **Chromatic** (chroma >= threshold): colors with a meaningful hue.
-///   Matched by nearest hue in circular Oklch space: each chromatic cluster
-///   is paired with the theme color whose hue angle is closest. This is what
-///   ensures the yellow moon maps to the green accent rather than swapping
-///   with the owl — yellow (~100°) is much closer to lime green (~135°) than
-///   to purple (~290°), so it always wins the green slot.
-///
-/// Why split into two groups at all? A dark purple background and a vivid
-/// yellow moon can have the same lightness, making L-only matching a coin
-/// flip. But their hues are ~150° apart — hue matching never confuses them.
-/// Conversely, a near-black background and a dark navy outline have very
-/// similar hues but their chroma is too low to trust hue readings reliably
-/// (a slight noise spike can flip the hue 180°), so those fall back to L.
+///   **Chromatic** (chroma ≥ ACHROMATIC_THRESHOLD): colors with a meaningful,
+///   stable hue. Matched by nearest circular hue angle. This ensures e.g.
+///   a yellow moon (~100°) always wins the green/lime slot (~135°) and never
+///   swaps with a purple owl (~290°), regardless of their lightness values.
 ///
 /// ## Stage 3 — Transfer
-/// For every pixel, inverse-power-distance blend across all
-/// (source_cluster → target_color) mappings. Lightness is ratio-preserved
-/// (orig_L / cluster_L × target_L) so gradients stay smooth — no banding,
-/// no flat slabs, no greenish bottom edge.
+/// For every pixel: inverse-power-distance weighted blend across all
+/// (source_cluster → target_color) pairs. Lightness is ratio-preserved
+/// (orig_L / cluster_L × target_L) so gradients remain smooth. Very dark
+/// pixels have their output chroma clamped to near-zero regardless of cluster
+/// assignment, preventing colour bleed into dark vignette regions.
 pub fn recolor_wallpaper(input: &RgbImage, theme: &NoctaliaTheme) -> RgbImage {
     // ── Stage 1: k-means clustering ───────────────────────────────────────
     let samples = sample_pixels(input, MAX_SAMPLES);
@@ -102,11 +104,11 @@ pub fn recolor_wallpaper(input: &RgbImage, theme: &NoctaliaTheme) -> RgbImage {
 
 /// Pair each source cluster with the most appropriate theme color.
 ///
-/// - Achromatic clusters → matched to achromatic theme colors by lightness rank.
-/// - Chromatic clusters  → matched to chromatic theme colors by nearest hue.
+/// - Achromatic clusters → achromatic theme colors, sorted by lightness rank.
+/// - Chromatic clusters  → chromatic theme colors, by nearest hue angle.
 ///
 /// Falls back gracefully when one side has no members (e.g. a greyscale image
-/// has no chromatic clusters; a fully saturated theme has no achromatic slots).
+/// has no chromatic clusters; a fully-saturated theme has no achromatic slots).
 fn match_clusters_to_theme(
     clusters: &[Oklch<f32>],
     theme_colors: &[Oklch<f32>],
@@ -143,7 +145,7 @@ fn match_clusters_to_theme(
     let ath_len = achromatic_theme.len();
     for (i, &src) in achromatic_clusters.iter().enumerate() {
         let target = if ath_len == 0 {
-            // No achromatic theme colors — use the darkest theme color overall
+            // No achromatic theme slots — use darkest theme color overall
             *theme_colors
                 .iter()
                 .min_by(|a, b| a.l.partial_cmp(&b.l).unwrap())
@@ -160,11 +162,11 @@ fn match_clusters_to_theme(
     }
 
     // ── Chromatic: pair by nearest hue ───────────────────────────────────
-    // Many-to-one is fine: two source hues both close to "green" will both
-    // map to the green theme slot, which is correct behavior.
+    // Many-to-one is intentional: two source hues both near "green" both map
+    // to the green slot. Each theme color can receive multiple clusters.
     for src in chromatic_clusters {
         let target = if chromatic_theme.is_empty() {
-            // No chromatic theme colors — fall back to nearest-L overall
+            // No chromatic theme slots — fall back to nearest-L overall
             *theme_colors
                 .iter()
                 .min_by(|a, b| {
@@ -187,7 +189,7 @@ fn match_clusters_to_theme(
     mappings
 }
 
-/// Circular distance between two hue angles. Result is in [0, 180] degrees.
+/// Circular distance between two hue angles. Result ∈ [0, 180] degrees.
 fn hue_dist(a: OklabHue<f32>, b: OklabHue<f32>) -> f32 {
     let diff = (a.into_degrees() - b.into_degrees()).abs() % 360.0;
     if diff > 180.0 { 360.0 - diff } else { diff }
@@ -213,8 +215,8 @@ fn sample_pixels(img: &RgbImage, max_samples: usize) -> Vec<Oklch<f32>> {
 // STAGE 1 — K-MEANS IN OKLCH SPACE
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Lloyd's k-means. Centroids computed in cartesian Oklab (a,b) to avoid
-/// hue-angle averaging artifacts near 0°/360°.
+/// Lloyd's k-means. Centroids computed in cartesian Oklab (a, b) to avoid
+/// hue-angle averaging artifacts near the 0°/360° wrap boundary.
 fn kmeans(points: &[Oklch<f32>], k: usize, iters: usize) -> Vec<Oklch<f32>> {
     if points.is_empty() || k == 0 {
         return vec![];
@@ -228,7 +230,7 @@ fn kmeans(points: &[Oklch<f32>], k: usize, iters: usize) -> Vec<Oklch<f32>> {
             .map(|p| nearest_centroid(p, &centroids))
             .collect();
 
-        let mut new_centroids = vec![[0.0f32; 3]; k];
+        let mut new_centroids = vec![[0.0f32; 3]; k]; // [L, a, b]
         let mut counts = vec![0usize; k];
 
         for (p, &c) in points.iter().zip(assignments.iter()) {
@@ -241,7 +243,7 @@ fn kmeans(points: &[Oklch<f32>], k: usize, iters: usize) -> Vec<Oklch<f32>> {
 
         for (i, nc) in new_centroids.iter().enumerate() {
             if counts[i] == 0 {
-                continue;
+                continue; // keep old centroid for empty cluster
             }
             let n = counts[i] as f32;
             let l = nc[0] / n;
@@ -256,9 +258,10 @@ fn kmeans(points: &[Oklch<f32>], k: usize, iters: usize) -> Vec<Oklch<f32>> {
     centroids
 }
 
-/// KMeans++ init — deterministic, no RNG.
-/// First centroid at 25th percentile index; each next one is the point
-/// farthest from all existing centroids.
+/// KMeans++ initialisation — deterministic, no RNG needed.
+/// First centroid at the 25th-percentile sample index; each subsequent one
+/// is the point farthest from all existing centroids. This gives a good
+/// spread across color space and converges faster than random init.
 fn kmeans_plus_plus_init(points: &[Oklch<f32>], k: usize) -> Vec<Oklch<f32>> {
     let mut centroids = Vec::with_capacity(k);
     centroids.push(points[points.len() / 4]);
@@ -304,10 +307,22 @@ fn nearest_centroid(p: &Oklch<f32>, centroids: &[Oklch<f32>]) -> usize {
 // STAGE 3 — PER-PIXEL TRANSFER
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Inverse-power-distance weighted blend across all cluster→target mappings.
+/// Blend pixel into theme space via inverse-power-distance weighting.
 ///
-/// Lightness: ratio-preserved (orig_L / src_L × tgt_L), clamped to [0.5, 2.0].
-/// Hue + chroma: blended in cartesian (a,b) Oklab space — no wrap artifacts.
+/// weight_i = 1 / dist(pixel, source_cluster_i)^SHARPNESS
+///
+/// Lightness: ratio-preserved (orig_L / src_L × tgt_L), so a gradient that
+/// ramps from dark to light in the source ramps proportionally in the output.
+/// No banding, no flat slabs.
+///
+/// Hue + chroma: blended in cartesian (a, b) Oklab space — no wrap artifacts
+/// near 0°/360°.
+///
+/// Dark pixel chroma clamp: pixels whose blended lightness falls below
+/// DARK_CHROMA_CUTOFF_L have their output chroma suppressed to DARK_CHROMA_MAX.
+/// This is the key fix for the green-bleed-into-dark-corners problem: near-black
+/// hue readings are noise regardless of cluster classification, so we don't let
+/// them carry colour into dark gradient regions.
 fn transfer_pixel(orig: Oklch<f32>, mappings: &[(Oklch<f32>, Oklch<f32>)]) -> Rgb<u8> {
     let mut total_w = 0.0f32;
     let mut out_l   = 0.0f32;
@@ -318,6 +333,8 @@ fn transfer_pixel(orig: Oklch<f32>, mappings: &[(Oklch<f32>, Oklch<f32>)]) -> Rg
         let dist = oklch_distance(&orig, src).max(EPSILON);
         let w = 1.0 / dist.powf(SHARPNESS);
 
+        // Ratio-preserve lightness: a pixel 80% as bright as its cluster
+        // centroid emerges 80% as bright as the target centroid.
         let l_ratio = if src.l > 0.01 {
             (orig.l / src.l).clamp(0.5, 2.0)
         } else {
@@ -336,7 +353,18 @@ fn transfer_pixel(orig: Oklch<f32>, mappings: &[(Oklch<f32>, Oklch<f32>)]) -> Rg
     let final_l = (out_l / total_w).clamp(0.0, 1.0);
     let a = out_a / total_w;
     let b = out_b / total_w;
-    let final_chroma = (a * a + b * b).sqrt().clamp(0.0, 0.5);
+
+    // Clamp chroma for very dark output pixels.
+    // A pixel that blends to near-black should carry essentially no hue —
+    // dark vignette corners must stay neutral-dark regardless of which cluster
+    // they were nearest to during matching.
+    let raw_chroma = (a * a + b * b).sqrt();
+    let final_chroma = if final_l < DARK_CHROMA_CUTOFF_L {
+        raw_chroma.min(DARK_CHROMA_MAX)
+    } else {
+        raw_chroma.clamp(0.0, 0.5)
+    };
+
     let final_hue = OklabHue::from_degrees(b.atan2(a).to_degrees());
 
     oklch_to_rgb(&Oklch {
@@ -360,8 +388,8 @@ fn oklch_distance(a: &Oklch<f32>, b: &Oklch<f32>) -> f32 {
     (dl * dl + da * da + db * db).sqrt()
 }
 
-/// Polar → cartesian Oklab. Required for correct averaging/blending.
-/// Averaging hue angles directly breaks near 0°/360°; this does not.
+/// Polar → cartesian Oklab. Required for correct centroid averaging and
+/// colour blending — averaging hue angles directly breaks near 0°/360°.
 fn hue_to_ab(chroma: f32, hue: OklabHue<f32>) -> (f32, f32) {
     let rad = hue.into_radians();
     (chroma * rad.cos(), chroma * rad.sin())
@@ -421,6 +449,7 @@ mod tests {
 
     #[test]
     fn test_gradient_stays_monotone() {
+        // Achromatic gradient: lighter pixels must stay lighter after recolor.
         let mut img = RgbImage::new(256, 1);
         for x in 0..256u32 {
             img.put_pixel(x, 0, Rgb([x as u8, x as u8, x as u8]));
@@ -464,24 +493,38 @@ mod tests {
     }
 
     #[test]
+    fn test_dark_pixel_has_low_chroma() {
+        // A near-black pixel must not bleed colour into dark vignette regions.
+        let mut img = RgbImage::new(1, 1);
+        img.put_pixel(0, 0, Rgb([8, 8, 8]));
+        let out = rgb_to_oklch(recolor_wallpaper(&img, &test_theme()).get_pixel(0, 0));
+        assert!(
+            out.chroma <= DARK_CHROMA_MAX + 0.01,
+            "near-black pixel chroma should be suppressed, got chroma={}",
+            out.chroma
+        );
+    }
+
+    #[test]
     fn test_yellow_and_purple_map_to_different_hues() {
-        // Yellow (~100°) and purple (~290°) chromatic clusters must not
-        // both collapse to the same theme color.
+        // Yellow (~100°) and purple (~290°) must not collapse to the same slot.
         let yellow = Oklch { l: 0.88, chroma: 0.18, hue: OklabHue::from_degrees(100.0) };
         let purple = Oklch { l: 0.55, chroma: 0.15, hue: OklabHue::from_degrees(290.0) };
         let theme = vec![
             Oklch { l: 0.12, chroma: 0.02, hue: OklabHue::from_degrees(290.0) },
             Oklch { l: 0.25, chroma: 0.02, hue: OklabHue::from_degrees(290.0) },
-            Oklch { l: 0.55, chroma: 0.17, hue: OklabHue::from_degrees(290.0) }, // purple slot
-            Oklch { l: 0.78, chroma: 0.22, hue: OklabHue::from_degrees(135.0) }, // green slot
+            Oklch { l: 0.55, chroma: 0.17, hue: OklabHue::from_degrees(290.0) },
+            Oklch { l: 0.78, chroma: 0.22, hue: OklabHue::from_degrees(135.0) },
             Oklch { l: 0.85, chroma: 0.04, hue: OklabHue::from_degrees(290.0) },
             Oklch { l: 0.92, chroma: 0.02, hue: OklabHue::from_degrees(290.0) },
             Oklch { l: 0.50, chroma: 0.20, hue: OklabHue::from_degrees(25.0)  },
         ];
         let mappings = match_clusters_to_theme(&[yellow, purple], &theme);
-        let tgt_y = mappings.iter().find(|(s, _)| (s.hue.into_degrees() - 100.0).abs() < 5.0).unwrap().1;
-        let tgt_p = mappings.iter().find(|(s, _)| (s.hue.into_degrees() - 290.0).abs() < 5.0).unwrap().1;
-        let hue_gap = hue_dist(tgt_y.hue, tgt_p.hue);
-        assert!(hue_gap > 30.0, "yellow and purple should hit different theme hues, gap={}", hue_gap);
+        let tgt_y = mappings.iter()
+            .find(|(s, _)| (s.hue.into_degrees() - 100.0).abs() < 5.0).unwrap().1;
+        let tgt_p = mappings.iter()
+            .find(|(s, _)| (s.hue.into_degrees() - 290.0).abs() < 5.0).unwrap().1;
+        let gap = hue_dist(tgt_y.hue, tgt_p.hue);
+        assert!(gap > 30.0, "yellow and purple should hit different theme hues, gap={}", gap);
     }
 }
