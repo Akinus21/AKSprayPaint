@@ -1,125 +1,95 @@
 use image::{Rgb, RgbImage};
-use palette::{FromColor, Oklch, OklabHue, Srgb};
+use palette::{FromColor, IntoColor, Oklch, OklabHue, Srgb};
 
 use akspraypaint::NoctaliaTheme;
 
-pub fn recolor_wallpaper(
-    input: &RgbImage,
-    theme: &NoctaliaTheme,
-) -> RgbImage {
+pub fn recolor_wallpaper(input: &RgbImage, theme: &NoctaliaTheme) -> RgbImage {
+    let palette: Vec<Oklch<f32>> = theme
+        .palette()
+        .into_iter()
+        .map(rgb_arr_to_oklch)
+        .collect();
+
     let (width, height) = input.dimensions();
-    let total = (width as usize) * (height as usize);
-    let max_samples = 200_000usize;
-    let stride = if total > max_samples {
-        (total / max_samples).max(1)
-    } else {
-        1
-    };
-
-    const SHADOW_L: f32 = 0.05;
-    const SHADOW_C: f32 = 0.05;
-
-    let bright = rgb_to_oklch(&Rgb(theme.bright_color()));
-    let light_surface = rgb_to_oklch(&Rgb(theme.light_surface_color()));
-    let dark_surface = rgb_to_oklch(&Rgb(theme.dark_surface_color()));
-    let background = rgb_to_oklch(&Rgb(theme.background_color()));
-
-    let target_colors = [bright, light_surface, dark_surface, background];
-
-    let mut samples: Vec<Oklch<f32>> = Vec::with_capacity(total / stride);
-    let mut flat_idx: Vec<usize> = Vec::with_capacity(total / stride);
-    for y in 0..height {
-        for x in 0..width {
-            let idx = (y as usize) * (width as usize) + (x as usize);
-            if idx % stride == 0 {
-                flat_idx.push(idx);
-                let p = input.get_pixel(x, y);
-                let c: Oklch<f32> = rgb_to_oklch(p);
-                samples.push(c);
-            }
-        }
-    }
-
-    let mut assignments = vec![0usize; samples.len()];
-    for (i, s) in samples.iter().enumerate() {
-        let mut best = 0;
-        let mut best_d = f32::MAX;
-        for (j, tc) in target_colors.iter().enumerate() {
-            let d = oklch_distance(s, tc);
-            if d < best_d {
-                best_d = d;
-                best = j;
-            }
-        }
-        assignments[i] = best;
-    }
-
     let mut output = RgbImage::new(width, height);
-    for y in 0..height {
-        for x in 0..width {
-            let idx = (y as usize) * (width as usize) + (x as usize);
-            let sample_idx = idx / stride;
 
-            let pixel = input.get_pixel(x, y);
-            let original = rgb_to_oklch(pixel);
-            let is_shadow = original.l < SHADOW_L && original.chroma < SHADOW_C;
-
-            let cluster = if sample_idx < assignments.len() {
-                assignments[sample_idx]
-            } else {
-                0
-            };
-            let target = &target_colors[cluster];
-
-            let new_l = if is_shadow {
-                original.l
-            } else {
-                (original.l * 0.4 + target.l * 0.6).clamp(0.0, 1.0)
-            };
-
-            let new_chroma = if is_shadow {
-                target.chroma * 0.5 + original.chroma * 0.5
-            } else {
-                target.chroma * 0.8 + original.chroma * 0.2
-            };
-
-            let new = Oklch {
-                l: new_l,
-                chroma: new_chroma.clamp(0.0, 0.5),
-                hue: target.hue,
-            };
-
-            output.put_pixel(x, y, oklch_to_rgb(&new));
-        }
+    for (x, y, pixel) in input.enumerate_pixels() {
+        let orig = rgb_to_oklch(pixel);
+        output.put_pixel(x, y, map_pixel(orig, &palette));
     }
+
     output
 }
 
+fn map_pixel(orig: Oklch<f32>, palette: &[Oklch<f32>]) -> Rgb<u8> {
+    const CHROMA_THRESHOLD: f32 = 0.04;
+
+    if orig.chroma < CHROMA_THRESHOLD {
+        let target = palette
+            .iter()
+            .min_by(|a, b| {
+                let da = (a.l - orig.l).abs();
+                let db = (b.l - orig.l).abs();
+                da.partial_cmp(&db).unwrap()
+            })
+            .unwrap();
+
+        let out = Oklch {
+            l: orig.l,
+            chroma: (target.chroma * 0.15).min(0.04),
+            hue: target.hue,
+        };
+        return oklch_to_rgb(&out);
+    }
+
+    let target = palette
+        .iter()
+        .min_by(|a, b| {
+            let da = hue_dist(orig.hue, a.hue);
+            let db = hue_dist(orig.hue, b.hue);
+            da.partial_cmp(&db).unwrap()
+        })
+        .unwrap();
+
+    let out = Oklch {
+        l: orig.l,
+        chroma: (orig.chroma * 0.7 + target.chroma * 0.3).clamp(0.0, 0.5),
+        hue: target.hue,
+    };
+    oklch_to_rgb(&out)
+}
+
+fn hue_dist(a: OklabHue<f32>, b: OklabHue<f32>) -> f32 {
+    let diff = (a.into_degrees() - b.into_degrees()).abs() % 360.0;
+    if diff > 180.0 {
+        360.0 - diff
+    } else {
+        diff
+    }
+}
+
+fn rgb_arr_to_oklch(arr: [u8; 3]) -> Oklch<f32> {
+    rgb_to_oklch(&Rgb(arr))
+}
+
 fn rgb_to_oklch(p: &Rgb<u8>) -> Oklch<f32> {
-    let rgb = Srgb::new(
+    let srgb = Srgb::new(
         p[0] as f32 / 255.0,
         p[1] as f32 / 255.0,
         p[2] as f32 / 255.0,
     );
-    let linear = rgb.into_linear();
+    let linear = srgb.into_linear();
     Oklch::from_color(linear)
 }
 
 fn oklch_to_rgb(c: &Oklch<f32>) -> Rgb<u8> {
-    let linear: Srgb<f32> = Srgb::from_color(*c);
-    let gamma: Srgb<f32> = linear.into_linear().into_encoding();
+    let linear: palette::LinSrgb<f32> = (*c).into_color();
+    let srgb: Srgb<f32> = linear.into_encoding();
     Rgb([
-        (gamma.red * 255.0).round().clamp(0.0, 255.0) as u8,
-        (gamma.green * 255.0).round().clamp(0.0, 255.0) as u8,
-        (gamma.blue * 255.0).round().clamp(0.0, 255.0) as u8,
+        (srgb.red * 255.0).round().clamp(0.0, 255.0) as u8,
+        (srgb.green * 255.0).round().clamp(0.0, 255.0) as u8,
+        (srgb.blue * 255.0).round().clamp(0.0, 255.0) as u8,
     ])
-}
-
-fn oklch_distance(a: &Oklch<f32>, b: &Oklch<f32>) -> f32 {
-    let dl = a.l - b.l;
-    let da = a.chroma * a.hue.into_radians().cos() - b.chroma * b.hue.into_radians().cos();
-    let db = a.chroma * a.hue.into_radians().sin() - b.chroma * b.hue.into_radians().sin();
-    dl * dl + da * da + db * db
 }
 
 #[cfg(test)]
@@ -132,7 +102,7 @@ mod tests {
         for pixel in img.pixels_mut() {
             *pixel = Rgb([128, 64, 192]);
         }
-        let theme = NoctaliaTheme {
+        let theme = akspraypaint::NoctaliaTheme {
             primary: [200, 50, 50],
             on_primary: [255, 255, 255],
             surface: [50, 50, 200],
@@ -143,5 +113,24 @@ mod tests {
         };
         let result = recolor_wallpaper(&img, &theme);
         assert_eq!(result.dimensions(), (32, 32));
+    }
+
+    #[test]
+    fn test_achromatic_stays_dark() {
+        let mut img = RgbImage::new(1, 1);
+        img.put_pixel(0, 0, Rgb([10, 10, 10]));
+        let theme = akspraypaint::NoctaliaTheme {
+            primary: [180, 50, 220],
+            on_primary: [255, 255, 255],
+            surface: [30, 20, 40],
+            on_surface: [220, 210, 230],
+            surface_variant: [60, 50, 80],
+            on_surface_variant: [200, 190, 210],
+            error: [220, 50, 50],
+        };
+        let result = recolor_wallpaper(&img, &theme);
+        let p = result.get_pixel(0, 0);
+        let out = rgb_to_oklch(p);
+        assert!(out.l < 0.15, "dark pixel should remain dark, got L={}", out.l);
     }
 }
