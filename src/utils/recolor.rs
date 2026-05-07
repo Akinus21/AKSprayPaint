@@ -1,18 +1,12 @@
 use image::{Rgb, RgbImage};
 use palette::{FromColor, IntoColor, Oklch, OklabHue, Srgb};
-use quantette::{Image, PaletteSize, Pipeline};
+use quantette::{PaletteSize, Pipeline, QuantizeMethod};
 
 use akspraypaint::NoctaliaTheme;
 
 const SHARPNESS: f32 = 8.0;
 const EPSILON: f32 = 1e-6;
 
-/// Recolor `input` so its colors match the noctalia `theme`.
-///
-/// Algorithm:
-/// 1. Try matugen to extract theme from wallpaper
-/// 2. If matugen fails, use k-means to find dominant colors and map to theme slots
-/// 3. Apply anchor-based inverse-distance transfer
 pub fn recolor_wallpaper(input: &RgbImage, theme: &NoctaliaTheme) -> RgbImage {
     let mappings = match extract_wallpaper_theme(input) {
         Ok(source) => {
@@ -20,7 +14,7 @@ pub fn recolor_wallpaper(input: &RgbImage, theme: &NoctaliaTheme) -> RgbImage {
             build_anchor_mappings(&source, theme)
         }
         Err(e) => {
-            eprintln!("Matugen failed ({}), using k-means fallback", e);
+            eprintln!("Matugen failed ({}), using quantette k-means fallback", e);
             fallback_mappings(input, theme)
         }
     };
@@ -36,7 +30,6 @@ pub fn recolor_wallpaper(input: &RgbImage, theme: &NoctaliaTheme) -> RgbImage {
     output
 }
 
-/// Extract theme from wallpaper using matugen
 fn extract_wallpaper_theme(input: &RgbImage) -> Result<MatugenTheme, String> {
     let mut buf = std::io::Cursor::new(Vec::new());
     input.write_to(&mut buf, image::ImageFormat::Png)
@@ -127,7 +120,6 @@ fn build_anchor_mappings(source: &MatugenTheme, target: &NoctaliaTheme) -> Vec<(
     ]
 }
 
-/// Quantette fallback: extract dominant colors using quantette's k-means and map to theme slots
 fn fallback_mappings(input: &RgbImage, theme: &NoctaliaTheme) -> Vec<(Oklch<f32>, Oklch<f32>)> {
     const NUM_COLORS: usize = 7;
 
@@ -177,16 +169,22 @@ fn build_identity_mappings(theme: &NoctaliaTheme) -> Vec<(Oklch<f32>, Oklch<f32>
 }
 
 fn extract_quantette_palette(input: &RgbImage, num_colors: usize) -> Vec<Oklch<f32>> {
-    let (width, height) = input.dimensions();
-    let raw_pixels: Vec<[u8; 3]> = input.pixels().map(|p| [p[0], p[1], p[2]]).collect();
+    let raw_pixels: Vec<palette::Srgb<u8>> = input.pixels()
+        .map(|p| palette::Srgb::new(p[0], p[1], p[2]))
+        .collect();
 
-    let img = Image::new(width, height, raw_pixels).expect("valid image dimensions");
-    let palette_size = PaletteSize::from(num_colors as u16).expect("valid palette size");
+    let palette_size = PaletteSize::from_u8_clamped(num_colors as u8);
 
-    let palette = Pipeline::new().quantize(&img, palette_size);
+    let palette = Pipeline::new()
+        .palette_size(palette_size)
+        .quantize_method(QuantizeMethod::kmeans())
+        .input_slice(&raw_pixels)
+        .output_srgb8_palette()
+        .map(|p| p.into_vec())
+        .unwrap_or_default();
 
-    palette.colors().iter().map(|rgb| {
-        let s = Srgb::new(rgb.red as f32 / 255.0, rgb.green as f32 / 255.0, rgb.blue as f32 / 255.0);
+    palette.into_iter().map(|rgb| {
+        let s = palette::Srgb::new(rgb.red as f32 / 255.0, rgb.green as f32 / 255.0, rgb.blue as f32 / 255.0);
         Oklch::from_color(s.into_linear())
     }).collect()
 }
@@ -204,7 +202,6 @@ fn transfer_pixel(orig: Oklch<f32>, mappings: &[(Oklch<f32>, Oklch<f32>)]) -> Rg
         let dist = oklch_dist(&orig, src).max(EPSILON);
         let w = 1.0 / dist.powf(SHARPNESS);
 
-        // Preserve lightness ratio from source to target
         let l_ratio = if src.l > 0.01 {
             (orig.l / src.l).clamp(0.5, 2.0)
         } else {
@@ -212,7 +209,6 @@ fn transfer_pixel(orig: Oklch<f32>, mappings: &[(Oklch<f32>, Oklch<f32>)]) -> Rg
         };
         let mapped_l = (tgt.l * l_ratio).clamp(0.0, 1.0);
 
-        // Boost saturation by amplifying target chroma
         let boosted_chroma = tgt.chroma * SATURATION_BOOST;
         let (ta, tb) = hue_to_ab(boosted_chroma.min(MAX_CHROMA), tgt.hue);
         out_l += w * mapped_l;
@@ -267,18 +263,6 @@ fn oklch_to_rgb(c: &Oklch<f32>) -> Rgb<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn test_theme() -> NoctaliaTheme {
-        NoctaliaTheme {
-            primary: [100, 50, 200],
-            on_primary: [240, 230, 255],
-            surface: [20, 15, 35],
-            on_surface: [180, 170, 200],
-            surface_variant: [45, 35, 65],
-            on_surface_variant: [160, 150, 185],
-            error: [200, 50, 50],
-        }
-    }
 
     #[test]
     fn test_parse_hex() {
