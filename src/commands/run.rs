@@ -24,7 +24,7 @@ pub fn apply_recolor(wp_path: &std::path::Path, hash: &str) -> Result<(), String
     let rgb_img = img.to_rgb8();
 
     let (theme_data, _) = theme::read_theme()?;
-    let palette = theme_data.palette();
+    let palette: Vec<[u8; 3]> = theme_data.palette();
 
     let recolored = recolor::recolor_wallpaper(&rgb_img, &palette);
 

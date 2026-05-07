@@ -1,6 +1,7 @@
-use crate::NoctaliaTheme;
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
+
+use akspraypaint::{parse_theme, NoctaliaTheme};
 
 pub fn theme_config_path() -> Option<PathBuf> {
     let config = dirs::config_dir()?;
@@ -18,7 +19,7 @@ pub fn read_theme() -> Result<(NoctaliaTheme, String), String> {
     })?;
     let content =
         std::fs::read_to_string(&path).map_err(|e| format!("failed to read colors.json: {}", e))?;
-    let theme = crate::parse_theme(&content)
+    let theme = parse_theme(&content)
         .ok_or_else(|| "failed to parse colors.json".to_string())?;
     Ok((theme, content))
 }

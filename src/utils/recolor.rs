@@ -1,5 +1,6 @@
 use image::{Rgb, RgbImage};
-use palette::{FromColor, IntoColor, Oklch, Srgb};
+use palette::{FromColor, Oklch, Srgb};
+use palette::hue::Hue;
 
 pub fn recolor_wallpaper(
     input: &RgbImage,
@@ -169,7 +170,7 @@ fn kmeans_luminance(
                 means[j] = Oklch {
                     l: (sums[j].0 / nf).clamp(0.0, 1.0),
                     chroma: (sums[j].1 / nf).clamp(0.0, 0.5),
-                    hue: palette::Hue::from_degrees(avg_hue),
+                    hue: Hue::from_degrees(avg_hue),
                 };
             }
         }

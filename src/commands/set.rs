@@ -1,5 +1,4 @@
 use crate::utils::{cache, recolor, theme, wallpaper};
-use std::path::PathBuf;
 
 pub fn set(path: &str) -> Result<(), String> {
     let wp_path = std::path::Path::new(path);
@@ -21,7 +20,7 @@ pub fn set(path: &str) -> Result<(), String> {
     let rgb_img = img.to_rgb8();
 
     let (theme_data, _) = theme::read_theme()?;
-    let palette = theme_data.palette();
+    let palette: Vec<[u8; 3]> = theme_data.palette();
     let recolored = recolor::recolor_wallpaper(&rgb_img, &palette);
 
     let mut buf = std::io::Cursor::new(Vec::new());
@@ -63,12 +62,9 @@ pub fn status() -> Result<(), String> {
         Some(ref p) => println!("Noctalia config:    {}", p.display()),
         None => println!("Noctalia config:    not found"),
     }
-    match has_theme {
-        Ok((_, content)) => {
-            let hash = theme::theme_hash(&content);
-            println!("Theme hash:         {}", hash);
-        }
-        Err(e) => println!("Theme error:        {}", e),
+    if let Ok((_, content)) = has_theme {
+        let hash = theme::theme_hash(&content);
+        println!("Theme hash:         {}", hash);
     }
 
     Ok(())
