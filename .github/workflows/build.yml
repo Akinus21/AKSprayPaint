@@ -1,0 +1,174 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build release binary
+        id: build
+        run: |
+          set -o pipefail
+          cargo build --release 2>&1 | tee build.log
+
+      - name: Verify binary size
+        id: verify
+        run: |
+          BINARY=target/release/akspraypaint
+          if [ ! -f "$BINARY" ]; then
+            echo "Binary not found!"
+            exit 1
+          fi
+          SIZE=$(stat -c%s "$BINARY")
+          echo "Binary size: $SIZE"
+          if [ "$SIZE" -lt 10240 ]; then
+            echo "Binary too small, likely from cache."
+            exit 1
+          fi
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: akspraypaint-binary
+          path: target/release/akspraypaint
+          if-no-files-found: error
+
+      - name: Determine next tag
+        id: tag
+        if: github.ref == 'refs/heads/main' && success()
+        run: |
+          git fetch --tags
+          LATEST_TAG=$(git describe --tags --abbrev=0 || echo "v0.0.0")
+          echo "Latest tag: $LATEST_TAG"
+          VERSION=${LATEST_TAG#v}
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+          PATCH=$((PATCH + 1))
+          NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}"
+          echo "new_tag=$NEW_TAG" >> $GITHUB_OUTPUT
+          echo "New tag: $NEW_TAG"
+
+      - name: Bump version in Cargo.toml
+        if: steps.tag.outputs.new_tag != ''
+        id: bump
+        run: |
+          NEW_TAG=${{ steps.tag.outputs.new_tag }}
+          NEW_VER=${NEW_TAG#v}
+          sed -i -E "s/^version = \".*\"/version = \"${NEW_VER}\"/" Cargo.toml
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml
+          git commit -m "chore: bump version to ${NEW_VER}"
+          git push origin HEAD:${{ github.ref }}
+
+      - name: Create and push tag
+        if: steps.tag.outputs.new_tag != ''
+        run: |
+          git tag ${{ steps.tag.outputs.new_tag }}
+          git push origin ${{ steps.tag.outputs.new_tag }}
+
+      - name: Compute SHA256
+        id: sha
+        run: |
+          SHA=$(sha256sum target/release/akspraypaint | awk '{print $1}')
+          echo "sha256=$SHA" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        if: steps.tag.outputs.new_tag != ''
+        id: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG=${{ steps.tag.outputs.new_tag }}
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --notes "Automated release of $TAG" \
+            target/release/akspraypaint
+
+      - name: Update Homebrew tap
+        if: steps.tag.outputs.new_tag != ''
+        env:
+          TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
+        run: |
+          set -e
+          TAG=${{ steps.tag.outputs.new_tag }}
+          VER=${TAG#v}
+          SHA=${{ steps.sha.outputs.sha256 }}
+          REPO_URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/akspraypaint"
+          git clone https://x-access-token:${TAP_TOKEN}@github.com/Akinus21/homebrew-tap.git tap-repo
+          cd tap-repo
+          FORMULA_PATH="Formula/akspraypaint.rb"
+          cat > $FORMULA_PATH <<EOF
+class Akspraypaint < Formula
+  desc "AKSprayPaint command line utility"
+  homepage "https://github.com/${{ github.repository }}"
+  url "${REPO_URL}"
+  sha256 "${SHA}"
+  version "${VER}"
+  license "MIT"
+
+  def install
+    bin.install "akspraypaint"
+  end
+end
+EOF
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add $FORMULA_PATH
+          git commit -m "akspraypaint ${VER}"
+          git push origin main
+
+      - name: Notify success webhook
+        if: success()
+        env:
+          WEBHOOK_SECRET: ${{ secrets.WEBHOOK_HMAC_SECRET }}
+        run: |
+          PAYLOAD=$(jq -n \
+            --arg event "build_success" \
+            --arg run_url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --arg sha "${{ github.sha }}" \
+            --arg commit_msg "$(git log -1 --pretty=%B)" \
+            --arg ref "${{ github.ref_name }}" \
+            --arg actor "${{ github.actor }}" \
+            '{event:$event,run_url:$run_url,sha:$sha,commit_msg:$commit_msg,ref:$ref,actor:$actor}')
+          SIGNATURE=$(printf '%s' "$PAYLOAD" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" | awk '{print "sha256="$2}')
+          curl -s -X POST -H "Content-Type: application/json" \
+            -H "X-Hub-Signature-256: $SIGNATURE" \
+            -H "X-GitHub-Event: build_success" \
+            -d "$PAYLOAD" \
+            https://webhook.akinus21.com/webhook/akspraypaint-build
+
+      - name: Notify failure webhook
+        if: failure()
+        env:
+          WEBHOOK_SECRET: ${{ secrets.WEBHOOK_HMAC_SECRET }}
+        run: |
+          ERRORS=$(tail -n 200 build.log | jq -R -s .)
+          PAYLOAD=$(jq -n \
+            --arg run_url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --arg sha "${{ github.sha }}" \
+            --arg commit_msg "$(git log -1 --pretty=%B)" \
+            --arg ref "${{ github.ref_name }}" \
+            --arg actor "${{ github.actor }}" \
+            --arg errors "$ERRORS" \
+            '{run_url:$run_url,sha:$sha,commit_msg:$commit_msg,ref:$ref,actor:$actor,errors:$errors}')
+          SIGNATURE=$(printf '%s' "$PAYLOAD" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" | awk '{print "sha256="$2}')
+          curl -s -X POST -H "Content-Type: application/json" \
+            -H "X-Hub-Signature-256: $SIGNATURE" \
+            -H "X-GitHub-Event: build_failure" \
+            -d "$PAYLOAD" \
+            https://webhook.akinus21.com/webhook/akspraypaint-build
