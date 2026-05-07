@@ -112,20 +112,8 @@ jobs:
           git clone https://x-access-token:${TAP_TOKEN}@github.com/Akinus21/homebrew-tap.git tap-repo
           cd tap-repo
           FORMULA_PATH="Formula/akspraypaint.rb"
-          cat > $FORMULA_PATH <<EOF
-class Akspraypaint < Formula
-  desc "AKSprayPaint command line utility"
-  homepage "https://github.com/${{ github.repository }}"
-  url "${REPO_URL}"
-  sha256 "${SHA}"
-  version "${VER}"
-  license "MIT"
-
-  def install
-    bin.install "akspraypaint"
-  end
-end
-EOF
+          printf 'class Akspraypaint < Formula\n  desc "AKSprayPaint command line utility"\n  homepage "https://github.com/%s"\n  url "%s"\n  sha256 "%s"\n  version "%s"\n  license "MIT"\n\n  def install\n    bin.install "akspraypaint"\n  end\nend\n' \
+            "${{ github.repository }}" "$REPO_URL" "$SHA" "$VER" > $FORMULA_PATH
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add $FORMULA_PATH
