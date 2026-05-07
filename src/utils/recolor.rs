@@ -179,11 +179,10 @@ fn extract_quantette_palette(input: &RgbImage, num_colors: usize) -> Vec<Oklch<f
         .palette_size(palette_size)
         .quantize_method(QuantizeMethod::kmeans())
         .input_slice(&raw_pixels)
-        .output_srgb8_palette()
-        .map(|p| p.into_vec())
-        .unwrap_or_default();
+        .expect("valid slice input")
+        .output_srgb8_palette();
 
-    palette.into_iter().map(|rgb| {
+    palette.colors().iter().map(|rgb| {
         let s = palette::Srgb::new(rgb.red as f32 / 255.0, rgb.green as f32 / 255.0, rgb.blue as f32 / 255.0);
         Oklch::from_color(s.into_linear())
     }).collect()
