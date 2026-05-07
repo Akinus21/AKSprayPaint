@@ -14,6 +14,11 @@ pub fn recolor_wallpaper(
         1
     };
 
+    const SHADOW_L: f32 = 0.05;
+    const SHADOW_C: f32 = 0.05;
+    const HIGHLIGHT_L: f32 = 0.95;
+    const HIGHLIGHT_C: f32 = 0.05;
+
     let mut samples: Vec<Oklch<f32>> = Vec::with_capacity(total / stride);
     let mut flat_idx: Vec<usize> = Vec::with_capacity(total / stride);
     for y in 0..height {
@@ -23,8 +28,84 @@ pub fn recolor_wallpaper(
                 flat_idx.push(idx);
                 let p = input.get_pixel(x, y);
                 let c: Oklch<f32> = rgb_to_oklch(p);
-                samples.push(c);
+                let is_shadow = c.l < SHADOW_L && c.chroma < SHADOW_C;
+                if !is_shadow {
+                    samples.push(c);
+                }
             }
+        }
+    }
+
+    let target_oklch: Vec<Oklch<f32>> = target_palette
+        .iter()
+        .map(|c| {
+            let rgb = Rgb(*c);
+            rgb_to_oklch(&rgb)
+        })
+        .collect();
+
+    let k = target_oklch.len();
+    let mut means = pick_spread_means(&samples, k);
+    let assignments = kmeans_luminance(&samples, &mut means, 20);
+
+    let mut cluster_map: Vec<usize> = vec![0; k];
+    for ci in 0..k {
+        let closest = target_oklch
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| {
+                oklch_distance(&means[ci], a)
+                    .partial_cmp(&oklch_distance(&means[ci], b))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|(idx, _)| idx)
+            .unwrap_or(0);
+        cluster_map[ci] = closest;
+    }
+
+    let mut output = RgbImage::new(width, height);
+    for y in 0..height {
+        for x in 0..width {
+            let idx = (y as usize) * (width as usize) + (x as usize);
+            let sample_idx = idx / stride;
+
+            let p = input.get_pixel(x, y);
+            let c: Oklch<f32> = rgb_to_oklch(p);
+
+            if c.l < SHADOW_L && c.chroma < SHADOW_C {
+                output.put_pixel(x, y, *p);
+                continue;
+            }
+
+            if c.l > HIGHLIGHT_L && c.chroma < HIGHLIGHT_C {
+                output.put_pixel(x, y, *p);
+                continue;
+            }
+
+            let cluster = if sample_idx < assignments.len() {
+                assignments[sample_idx]
+            } else {
+                0
+            };
+            let target = &target_oklch[cluster_map[cluster]];
+
+            let base_lum = means[cluster].l;
+            let lum_ratio = if base_lum > 0.001 {
+                (c.l / base_lum).clamp(0.3, 2.5)
+            } else {
+                1.0
+            };
+
+            let new = Oklch {
+                l: (target.l * lum_ratio).clamp(0.0, 1.0),
+                chroma: target.chroma * 0.8 + c.chroma * 0.2,
+                hue: target.hue,
+            };
+            output.put_pixel(x, y, oklch_to_rgb(&new));
+        }
+    }
+    output
+}
         }
     }
 
