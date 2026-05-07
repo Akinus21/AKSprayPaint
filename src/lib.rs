@@ -23,6 +23,22 @@ impl NoctaliaTheme {
             self.error,
         ]
     }
+
+    pub fn bright_color(&self) -> [u8; 3] {
+        self.on_surface_variant
+    }
+
+    pub fn light_surface_color(&self) -> [u8; 3] {
+        self.on_primary
+    }
+
+    pub fn dark_surface_color(&self) -> [u8; 3] {
+        self.primary
+    }
+
+    pub fn background_color(&self) -> [u8; 3] {
+        self.surface_variant
+    }
 }
 
 #[derive(Debug, Deserialize)]
