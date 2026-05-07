@@ -130,31 +130,41 @@ fn parse_hex(hex: &str) -> Result<[u8; 3], String> {
 }
 
 fn build_anchor_mappings(source: &MatugenTheme, target: &NoctaliaTheme) -> Vec<(Oklch<f32>, Oklch<f32>)> {
-    let source_colors: Vec<Oklch<f32>> = vec![
-        rgb_to_oklch(&Rgb(source.primary)),
-        rgb_to_oklch(&Rgb(source.on_primary)),
-        rgb_to_oklch(&Rgb(source.surface)),
-        rgb_to_oklch(&Rgb(source.on_surface)),
-        rgb_to_oklch(&Rgb(source.surface_variant)),
-        rgb_to_oklch(&Rgb(source.on_surface_variant)),
-        rgb_to_oklch(&Rgb(source.error)),
-    ];
+    const HIGH_CHROMA_THRESHOLD: f32 = 0.06;
 
     let target_colors: Vec<Oklch<f32>> = target.palette()
         .into_iter()
         .map(|c| rgb_to_oklch(&Rgb(c)))
         .collect();
 
-    source_colors.into_iter().map(|src| {
-        let best_target = target_colors.iter()
-            .min_by(|a, b| {
-                let da = hue_dist(src.hue, a.hue);
-                let db = hue_dist(src.hue, b.hue);
-                da.partial_cmp(&db).unwrap()
-            })
-            .copied()
-            .unwrap_or(src);
-        (src, best_target)
+    let slots: Vec<(&str, [u8; 3], [u8; 3])> = vec![
+        ("primary", source.primary, target.primary),
+        ("on_primary", source.on_primary, target.on_primary),
+        ("surface", source.surface, target.surface),
+        ("on_surface", source.on_surface, target.on_surface),
+        ("surface_variant", source.surface_variant, target.surface_variant),
+        ("on_surface_variant", source.on_surface_variant, target.on_surface_variant),
+        ("error", source.error, target.error),
+    ];
+
+    slots.into_iter().map(|(_, src_rgb, target_rgb)| {
+        let src_oklch = rgb_to_oklch(&Rgb(src_rgb));
+        let target_oklch = rgb_to_oklch(&Rgb(target_rgb));
+
+        let mapped_target = if src_oklch.chroma >= HIGH_CHROMA_THRESHOLD {
+            target_colors.iter()
+                .min_by(|a, b| {
+                    let da = hue_dist(src_oklch.hue, a.hue);
+                    let db = hue_dist(src_oklch.hue, b.hue);
+                    da.partial_cmp(&db).unwrap()
+                })
+                .copied()
+                .unwrap_or(target_oklch)
+        } else {
+            target_oklch
+        };
+
+        (src_oklch, mapped_target)
     }).collect()
 }
 
