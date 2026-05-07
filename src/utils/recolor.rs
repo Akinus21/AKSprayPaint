@@ -7,62 +7,37 @@ use akspraypaint::NoctaliaTheme;
 // CONSTANTS
 // ─────────────────────────────────────────────────────────────────────────────
 
+const K: usize = 7;
+const KMEANS_ITER: usize = 12;
+const MAX_SAMPLES: usize = 40_000;
 const SHARPNESS: f32 = 8.0;
 const EPSILON: f32 = 1e-6;
 
-/// Sobel edge detection threshold. Pixels with gradient magnitude above this
-/// are classified as edges/outlines.
-const EDGE_THRESHOLD: f32 = 0.15;
+/// Sobel gradient magnitude above this → edge pixel.
+const EDGE_THRESHOLD: f32 = 0.12;
 
-/// How strongly to weight center-proximity when computing saliency.
-/// 1.0 = center matters as much as contrast; 0.0 = pure contrast saliency.
-const CENTER_WEIGHT: f32 = 0.6;
+/// Saliency above this → subject pixel. Below → background.
+/// Soft transition between SALIENCY_BG_MAX and SALIENCY_FG_MIN.
+const SALIENCY_BG_MAX: f32 = 0.38;
+const SALIENCY_FG_MIN: f32 = 0.55;
 
-/// Gaussian blur radius for smoothing the saliency map before segmentation.
-/// Larger = softer region boundaries.
-const BLUR_RADIUS: u32 = 8;
+/// Box blur radius for smoothing saliency before segmentation.
+const BLUR_RADIUS: u32 = 12;
+
+/// Center-bias weight in saliency. Subjects tend to be centered.
+const CENTER_WEIGHT: f32 = 0.55;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PIXEL ROLE
+// SEGMENT
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// The structural role of a pixel in the image.
-/// Each role maps directly to a semantic slot in NoctaliaTheme.
-///
-/// The mapping is:
-///   Background       → theme.surface          (base background color)
-///   BackgroundDeep   → theme.surface_variant  (darker bg variation / vignette)
-///   Edge             → theme.on_surface        (outlines, detail lines)
-///   SubjectMid       → theme.primary           (main focal element, mid-tones)
-///   SubjectBright    → theme.on_primary        (highlights on focal element)
-///   SubjectAccent    → theme.on_surface_variant (secondary subject detail)
-///
-/// Why this works: the semantic names in NoctaliaTheme encode *intent*.
-/// `surface` is always the base background. `primary` is always the dominant
-/// foreground accent. `on_primary` is always what appears ON the primary color.
-/// We don't need to match colors — we match structural roles to semantic slots.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum PixelRole {
-    BackgroundDeep,  // → surface_variant  (dark vignette, far background)
-    Background,      // → surface          (main background)
-    Edge,            // → on_surface       (outlines, hard edges)
-    SubjectMid,      // → primary          (main subject body)
-    SubjectBright,   // → on_primary       (highlight on subject)
-    SubjectAccent,   // → on_surface_variant (secondary subject detail)
-}
-
-impl PixelRole {
-    /// Map this role to the theme color it should become.
-    fn theme_color(self, theme: &NoctaliaTheme) -> Oklch<f32> {
-        match self {
-            PixelRole::BackgroundDeep  => rgb_arr_to_oklch(theme.surface_variant),
-            PixelRole::Background      => rgb_arr_to_oklch(theme.surface),
-            PixelRole::Edge            => rgb_arr_to_oklch(theme.on_surface),
-            PixelRole::SubjectMid      => rgb_arr_to_oklch(theme.primary),
-            PixelRole::SubjectBright   => rgb_arr_to_oklch(theme.on_primary),
-            PixelRole::SubjectAccent   => rgb_arr_to_oklch(theme.on_surface_variant),
-        }
-    }
+/// Coarse 3-way segment for a pixel.
+/// Used to gate which theme color pool each pixel can draw from.
+#[derive(Clone, Copy, Debug)]
+enum Segment {
+    Background, // → only dark/achromatic theme colors
+    Edge,       // → on_surface theme color
+    Subject,    // → chromatic theme colors
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -71,71 +46,76 @@ impl PixelRole {
 
 /// Recolor `input` so its colors match the noctalia `theme`.
 ///
-/// Works on **any** image — no hardcoded source colors, no color matching.
+/// Works on any image — no hardcoded source colors.
 ///
-/// # Algorithm
+/// # Algorithm — three passes
 ///
-/// ## Stage 1 — Structural segmentation (computer vision)
-/// Assign every pixel a *role* based on what it structurally IS, not what
-/// color it happens to be. Roles are determined by:
+/// ## Pass 1 — CV segmentation
+/// Classify every pixel as Background, Edge, or Subject using:
+///   - Sobel edge detection on perceptual lightness (Oklch L)
+///   - Frequency-tuned saliency (contrast × center-proximity)
+///   - Box blur to smooth the saliency map
 ///
-///   **Saliency map**: combines local contrast (how different is this pixel
-///   from its neighbors) with center-proximity (subjects tend to be centered).
-///   High saliency = foreground subject. Low saliency = background.
+/// This produces a soft 3-way mask. Crucially, dark vignette corners are
+/// always Background regardless of their slight colour tint — the CV pass
+/// gates them out before any colour matching happens.
 ///
-///   **Edge map**: Sobel gradient magnitude. High gradient = outline/edge pixel.
-///   Edges are detected before saliency so outlines don't bleed into subject.
+/// ## Pass 2 — Hue-family matching within each segment
+/// Each segment only draws from a restricted pool of theme colors:
+///   Background → surface + surface_variant (dark/achromatic only)
+///   Edge       → on_surface
+///   Subject    → primary + on_primary + on_surface_variant (chromatic)
 ///
-///   **Lightness within each region**: within the subject region, bright pixels
-///   are highlights (on_primary), mid-tones are the main body (primary),
-///   darker pixels are accent details (on_surface_variant).
-///   Within the background, dark pixels are deep background (surface_variant),
-///   lighter pixels are the main background (surface).
+/// Within each pool, k-means clusters from the source image are matched
+/// to theme colors by hue proximity. Because the pools are gated by the
+/// CV pass, green accent can never bleed into background pixels —
+/// they're in separate pools entirely.
 ///
-/// ## Stage 2 — Semantic theme mapping
-/// Each role maps directly to a NoctaliaTheme field by semantic name:
-///   surface = background, primary = main subject, on_primary = highlights, etc.
-/// No color distance math, no clustering, no thresholds on color values.
-///
-/// ## Stage 3 — Smooth transfer
-/// For each pixel, compute a soft weighted blend across all role→color mappings
-/// weighted by how strongly the pixel belongs to each role. This preserves
-/// smooth gradients at region boundaries.
+/// ## Pass 3 — Smooth transfer
+/// Inverse-power-distance weighted blend using per-pixel segment weights.
+/// Lightness ratio-preserved so gradients remain smooth.
 pub fn recolor_wallpaper(input: &RgbImage, theme: &NoctaliaTheme) -> RgbImage {
     let (width, height) = input.dimensions();
+    let n = (width * height) as usize;
 
-    // ── Stage 1: compute per-pixel role memberships ───────────────────────
-    let lightness_map = compute_lightness_map(input);
-    let edge_map      = compute_edge_map(&lightness_map);
-    let saliency_map  = compute_saliency_map(&lightness_map, width, height);
+    // ── Pass 1: CV segmentation ───────────────────────────────────────────
+    let lightness   = compute_lightness_map(input);
+    let edges       = compute_edge_map(&lightness, width, height);
+    let saliency    = compute_saliency_map(&lightness, width, height);
+    let saliency_sm = box_blur(&saliency, width, height, BLUR_RADIUS);
 
-    // Compute per-pixel soft membership in each role [0.0, 1.0]
-    let role_maps = compute_role_memberships(
-        &lightness_map,
-        &edge_map,
-        &saliency_map,
-        width,
-        height,
-    );
+    // Per-pixel soft weights for each segment: [bg, edge, subject]
+    let seg_weights = compute_segment_weights(&edges, &saliency_sm, n);
 
-    // ── Stage 2: build role→theme-color table ─────────────────────────────
-    let role_colors: Vec<(PixelRole, Oklch<f32>)> = vec![
-        (PixelRole::BackgroundDeep, PixelRole::BackgroundDeep.theme_color(theme)),
-        (PixelRole::Background,     PixelRole::Background.theme_color(theme)),
-        (PixelRole::Edge,           PixelRole::Edge.theme_color(theme)),
-        (PixelRole::SubjectMid,     PixelRole::SubjectMid.theme_color(theme)),
-        (PixelRole::SubjectBright,  PixelRole::SubjectBright.theme_color(theme)),
-        (PixelRole::SubjectAccent,  PixelRole::SubjectAccent.theme_color(theme)),
-    ];
+    // ── Pass 2: hue-family matching per segment pool ──────────────────────
+    let samples  = sample_pixels(input, MAX_SAMPLES);
+    let clusters = kmeans(&samples, K, KMEANS_ITER);
 
-    // ── Stage 3: per-pixel blend ──────────────────────────────────────────
+    // Background pool: dark/achromatic theme colors
+    // Subject pool:    chromatic theme colors
+    // Edge:            on_surface (fixed, no matching needed)
+    let bg_pool      = background_pool(theme);
+    let subject_pool = subject_pool(theme);
+    let edge_color   = rgb_arr_to_oklch(theme.on_surface);
+
+    // Match clusters to each pool by hue proximity
+    let bg_mappings      = match_by_hue(&clusters, &bg_pool);
+    let subject_mappings = match_by_hue(&clusters, &subject_pool);
+
+    // ── Pass 3: per-pixel transfer ────────────────────────────────────────
     let mut output = RgbImage::new(width, height);
     for y in 0..height {
         for x in 0..width {
             let idx = (y * width + x) as usize;
             let orig = rgb_to_oklch(input.get_pixel(x, y));
-            let memberships = get_memberships(&role_maps, idx);
-            let pixel = blend_pixel(orig, &memberships, &role_colors);
+            let [w_bg, w_edge, w_subj] = seg_weights[idx];
+            let pixel = blend_segments(
+                orig,
+                w_bg, w_edge, w_subj,
+                &bg_mappings,
+                &subject_mappings,
+                edge_color,
+            );
             output.put_pixel(x, y, pixel);
         }
     }
@@ -143,203 +123,336 @@ pub fn recolor_wallpaper(input: &RgbImage, theme: &NoctaliaTheme) -> RgbImage {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// STAGE 1 — COMPUTER VISION PASSES
+// THEME COLOR POOLS
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Per-pixel Oklch lightness, flattened to [0,1].
+/// Background pool: the dark/base theme colors.
+/// These are the only colors background pixels can ever map to.
+/// Green accent is NOT in this list — that's how we prevent bleed.
+fn background_pool(theme: &NoctaliaTheme) -> Vec<Oklch<f32>> {
+    vec![
+        rgb_arr_to_oklch(theme.surface),
+        rgb_arr_to_oklch(theme.surface_variant),
+    ]
+}
+
+/// Subject pool: the foreground/accent theme colors.
+/// These are what the owl, moon, and other subject elements map to.
+fn subject_pool(theme: &NoctaliaTheme) -> Vec<Oklch<f32>> {
+    vec![
+        rgb_arr_to_oklch(theme.primary),
+        rgb_arr_to_oklch(theme.on_primary),
+        rgb_arr_to_oklch(theme.on_surface_variant),
+    ]
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PASS 2 — HUE-FAMILY MATCHING
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// For each cluster, find the pool color whose hue is nearest.
+/// For achromatic clusters (low chroma), fall back to nearest-L in pool.
+/// Returns (cluster, target) pairs for use in transfer_pixel.
+fn match_by_hue(
+    clusters: &[Oklch<f32>],
+    pool: &[Oklch<f32>],
+) -> Vec<(Oklch<f32>, Oklch<f32>)> {
+    if pool.is_empty() { return vec![]; }
+
+    clusters.iter().map(|&src| {
+        let target = if src.chroma < 0.05 {
+            // Achromatic: match by lightness
+            *pool.iter()
+                .min_by(|a, b| {
+                    (a.l - src.l).abs()
+                        .partial_cmp(&(b.l - src.l).abs())
+                        .unwrap()
+                })
+                .unwrap()
+        } else {
+            // Chromatic: match by nearest hue
+            *pool.iter()
+                .min_by(|a, b| {
+                    hue_dist(src.hue, a.hue)
+                        .partial_cmp(&hue_dist(src.hue, b.hue))
+                        .unwrap()
+                })
+                .unwrap()
+        };
+        (src, target)
+    }).collect()
+}
+
+fn hue_dist(a: OklabHue<f32>, b: OklabHue<f32>) -> f32 {
+    let diff = (a.into_degrees() - b.into_degrees()).abs() % 360.0;
+    if diff > 180.0 { 360.0 - diff } else { diff }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PASS 1 — CV SEGMENTATION
+// ─────────────────────────────────────────────────────────────────────────────
+
 fn compute_lightness_map(img: &RgbImage) -> Vec<f32> {
     img.pixels().map(|p| rgb_to_oklch(p).l).collect()
 }
 
-/// Sobel edge detection on the lightness map.
-/// Returns gradient magnitude per pixel, normalised to [0,1].
-///
-/// Sobel is perceptually appropriate here because we're working on Oklch
-/// lightness, which is already perceptually uniform. A large Sobel gradient
-/// in L-space means the edge is visually prominent.
-fn compute_edge_map(lightness: &[f32]) -> Vec<f32> {
-    // We need width/height — infer from sqrt (square-ish images common,
-    // but we stored as flat vec so we'll pass dims separately below).
-    // Actually we compute this inline with the saliency map — see note there.
-    // For now return placeholder; real computation done in compute_role_memberships.
-    lightness.iter().map(|_| 0.0f32).collect()
-}
-
-/// Spectral saliency: for each pixel, how different is it from the local
-/// neighborhood average (local contrast), weighted by proximity to image center.
-///
-/// This is a simplified version of frequency-tuned saliency (Achanta 2009):
-///   saliency(x,y) = ||I_mean - I(x,y)||  in Lab space
-/// combined with a Gaussian center-bias.
-///
-/// Result is normalised to [0,1].
-fn compute_saliency_map(lightness: &[f32], width: u32, height: u32) -> Vec<f32> {
-    let n = (width * height) as usize;
-    let mean_l: f32 = lightness.iter().sum::<f32>() / n as f32;
-
-    let cx = width as f32 / 2.0;
-    let cy = height as f32 / 2.0;
-    let max_dist = (cx * cx + cy * cy).sqrt();
-
-    let mut saliency = vec![0.0f32; n];
-    for y in 0..height {
-        for x in 0..width {
-            let idx = (y * width + x) as usize;
-            // Contrast component: deviation from image mean lightness
-            let contrast = (lightness[idx] - mean_l).abs();
-            // Center-proximity component: closer to center = more salient
-            let dx = x as f32 - cx;
-            let dy = y as f32 - cy;
-            let dist = (dx * dx + dy * dy).sqrt();
-            let center_proximity = 1.0 - (dist / max_dist).clamp(0.0, 1.0);
-            saliency[idx] = (1.0 - CENTER_WEIGHT) * contrast
-                          + CENTER_WEIGHT * center_proximity;
-        }
-    }
-
-    // Normalise to [0,1]
-    let max_s = saliency.iter().cloned().fold(0.0f32, f32::max).max(1e-6);
-    saliency.iter_mut().for_each(|s| *s /= max_s);
-    saliency
-}
-
-/// All six role membership maps, each normalised to [0,1].
-/// Stored as a flat Vec<[f32; 6]> indexed by pixel.
-///
-/// The six slots correspond to:
-///   [0] BackgroundDeep
-///   [1] Background
-///   [2] Edge
-///   [3] SubjectMid
-///   [4] SubjectBright
-///   [5] SubjectAccent
-fn compute_role_memberships(
-    lightness: &[f32],
-    edge_map_placeholder: &[f32],  // unused — we compute edges inline
-    saliency: &[f32],
-    width: u32,
-    height: u32,
-) -> Vec<[f32; 6]> {
-    let n = (width * height) as usize;
-    let _ = edge_map_placeholder; // suppress warning
-
-    // ── Real Sobel edge detection ─────────────────────────────────────────
-    let mut edges = vec![0.0f32; n];
+/// Sobel edge detection on Oklch lightness. Returns normalised [0,1].
+fn compute_edge_map(lightness: &[f32], width: u32, height: u32) -> Vec<f32> {
     let w = width as i32;
     let h = height as i32;
+    let n = (width * height) as usize;
+    let mut edges = vec![0.0f32; n];
 
     for y in 1..h-1 {
         for x in 1..w-1 {
-            let idx = |dy: i32, dx: i32| -> f32 {
-                lightness[((y + dy) * w + (x + dx)) as usize]
-            };
-            let gx = -idx(-1,-1) - 2.0*idx(0,-1) - idx(1,-1)
-                     +idx(-1, 1) + 2.0*idx(0, 1) + idx(1, 1);
-            let gy = -idx(-1,-1) - 2.0*idx(-1,0) - idx(-1,1)
-                     +idx( 1,-1) + 2.0*idx( 1,0) + idx( 1,1);
-            edges[((y * w) + x) as usize] = (gx*gx + gy*gy).sqrt();
+            let px = |dy: i32, dx: i32| lightness[((y+dy)*w+(x+dx)) as usize];
+            let gx = -px(-1,-1) - 2.0*px(0,-1) - px(1,-1)
+                     +px(-1, 1) + 2.0*px(0, 1) + px(1, 1);
+            let gy = -px(-1,-1) - 2.0*px(-1,0) - px(-1,1)
+                     +px( 1,-1) + 2.0*px( 1,0) + px( 1,1);
+            edges[(y*w+x) as usize] = (gx*gx + gy*gy).sqrt();
         }
     }
-    // Normalise edges to [0,1]
     let max_e = edges.iter().cloned().fold(0.0f32, f32::max).max(1e-6);
     edges.iter_mut().for_each(|e| *e /= max_e);
+    edges
+}
 
-    // ── Gaussian blur on saliency for smoother region boundaries ─────────
-    let saliency_smooth = box_blur(saliency, width, height, BLUR_RADIUS);
+/// Frequency-tuned saliency: local contrast × center-proximity.
+fn compute_saliency_map(lightness: &[f32], width: u32, height: u32) -> Vec<f32> {
+    let n = (width * height) as usize;
+    let mean_l = lightness.iter().sum::<f32>() / n as f32;
+    let cx = width  as f32 / 2.0;
+    let cy = height as f32 / 2.0;
+    let max_dist = (cx*cx + cy*cy).sqrt();
 
-    // ── Build membership maps ─────────────────────────────────────────────
-    // Strategy:
-    //   edge_strength  → Edge role membership
-    //   saliency       → splits into subject vs background
-    //   lightness      → within subject: bright=highlight, dark=accent
-    //                  → within background: dark=deep, light=normal
-
-    let mut result = vec![[0.0f32; 6]; n];
-
-    for i in 0..n {
-        let e = edges[i];                          // 0=no edge, 1=strong edge
-        let s = saliency_smooth[i];                // 0=background, 1=foreground
-        let l = lightness[i];                      // 0=dark, 1=bright
-
-        // Edge membership: strong where Sobel is above threshold
-        let edge_m = smoothstep(EDGE_THRESHOLD * 0.5, EDGE_THRESHOLD, e);
-
-        // Non-edge weight: remaining membership after edges
-        let non_edge = 1.0 - edge_m;
-
-        // Subject vs background split from saliency
-        // Use a soft threshold around s=0.5
-        let subject_m = smoothstep(0.35, 0.65, s) * non_edge;
-        let bg_m      = (1.0 - smoothstep(0.35, 0.65, s)) * non_edge;
-
-        // Within subject: split by lightness
-        // Bright pixels → SubjectBright (highlight), dark → SubjectAccent, mid → SubjectMid
-        let bright_m  = smoothstep(0.65, 0.85, l);
-        let dark_m    = 1.0 - smoothstep(0.25, 0.45, l);
-        let mid_m     = 1.0 - bright_m - dark_m;
-        let mid_m     = mid_m.max(0.0);
-
-        // Within background: split by lightness
-        // Dark → BackgroundDeep, lighter → Background
-        let bg_deep_m   = (1.0 - smoothstep(0.2, 0.45, l)) * bg_m;
-        let bg_normal_m = smoothstep(0.2, 0.45, l) * bg_m;
-
-        result[i] = [
-            bg_deep_m,          // BackgroundDeep
-            bg_normal_m,        // Background
-            edge_m,             // Edge
-            mid_m * subject_m,  // SubjectMid
-            bright_m * subject_m, // SubjectBright
-            dark_m * subject_m, // SubjectAccent
-        ];
+    let mut sal = vec![0.0f32; n];
+    for y in 0..height {
+        for x in 0..width {
+            let idx = (y*width+x) as usize;
+            let contrast = (lightness[idx] - mean_l).abs();
+            let dx = x as f32 - cx;
+            let dy = y as f32 - cy;
+            let center = 1.0 - ((dx*dx+dy*dy).sqrt() / max_dist).clamp(0.0, 1.0);
+            sal[idx] = (1.0 - CENTER_WEIGHT) * contrast + CENTER_WEIGHT * center;
+        }
     }
-
-    result
+    let max_s = sal.iter().cloned().fold(0.0f32, f32::max).max(1e-6);
+    sal.iter_mut().for_each(|s| *s /= max_s);
+    sal
 }
 
-fn get_memberships(role_maps: &[[f32; 6]], idx: usize) -> [f32; 6] {
-    role_maps[idx]
+/// Compute per-pixel soft segment weights [bg, edge, subject].
+/// Sum of weights = 1.0 per pixel.
+fn compute_segment_weights(
+    edges: &[f32],
+    saliency: &[f32],
+    n: usize,
+) -> Vec<[f32; 3]> {
+    let mut weights = vec![[0.0f32; 3]; n];
+    for i in 0..n {
+        let e = edges[i];
+        let s = saliency[i];
+
+        // Edge membership: soft threshold
+        let edge_w = smoothstep(EDGE_THRESHOLD * 0.5, EDGE_THRESHOLD * 1.5, e);
+        let non_edge = 1.0 - edge_w;
+
+        // Subject vs background from saliency, on the non-edge portion
+        let subj_w = smoothstep(SALIENCY_BG_MAX, SALIENCY_FG_MIN, s) * non_edge;
+        let bg_w   = (1.0 - smoothstep(SALIENCY_BG_MAX, SALIENCY_FG_MIN, s)) * non_edge;
+
+        weights[i] = [bg_w, edge_w, subj_w];
+    }
+    weights
+}
+
+fn smoothstep(lo: f32, hi: f32, t: f32) -> f32 {
+    let x = ((t - lo) / (hi - lo)).clamp(0.0, 1.0);
+    x * x * (3.0 - 2.0 * x)
+}
+
+fn box_blur(input: &[f32], width: u32, height: u32, radius: u32) -> Vec<f32> {
+    let w = width as usize;
+    let h = height as usize;
+    let r = radius as usize;
+    let mut tmp = vec![0.0f32; w * h];
+    let mut out = vec![0.0f32; w * h];
+
+    // Horizontal
+    for y in 0..h {
+        for x in 0..w {
+            let lo = x.saturating_sub(r);
+            let hi = (x + r).min(w - 1);
+            let n = (hi - lo + 1) as f32;
+            tmp[y*w+x] = (lo..=hi).map(|xx| input[y*w+xx]).sum::<f32>() / n;
+        }
+    }
+    // Vertical
+    for y in 0..h {
+        for x in 0..w {
+            let lo = y.saturating_sub(r);
+            let hi = (y + r).min(h - 1);
+            let n = (hi - lo + 1) as f32;
+            out[y*w+x] = (lo..=hi).map(|yy| tmp[yy*w+x]).sum::<f32>() / n;
+        }
+    }
+    out
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// STAGE 3 — PIXEL BLENDING
+// PASS 1 — K-MEANS
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Blend pixel to output using role memberships as weights.
+fn sample_pixels(img: &RgbImage, max_samples: usize) -> Vec<Oklch<f32>> {
+    let (w, h) = img.dimensions();
+    let total = (w * h) as usize;
+    let stride = (total / max_samples).max(1);
+    img.pixels()
+        .enumerate()
+        .filter(|(i, _)| i % stride == 0)
+        .map(|(_, p)| rgb_to_oklch(p))
+        .collect()
+}
+
+fn kmeans(points: &[Oklch<f32>], k: usize, iters: usize) -> Vec<Oklch<f32>> {
+    if points.is_empty() || k == 0 { return vec![]; }
+    let mut centroids = kmeans_init(points, k);
+
+    for _ in 0..iters {
+        let assignments: Vec<usize> = points.iter()
+            .map(|p| nearest(p, &centroids))
+            .collect();
+
+        let mut sums = vec![[0.0f32; 3]; k];
+        let mut counts = vec![0usize; k];
+        for (p, &c) in points.iter().zip(&assignments) {
+            let (a, b) = hue_to_ab(p.chroma, p.hue);
+            sums[c][0] += p.l; sums[c][1] += a; sums[c][2] += b;
+            counts[c] += 1;
+        }
+        for i in 0..k {
+            if counts[i] == 0 { continue; }
+            let n = counts[i] as f32;
+            let l = sums[i][0]/n;
+            let a = sums[i][1]/n;
+            let b = sums[i][2]/n;
+            centroids[i] = Oklch {
+                l,
+                chroma: (a*a+b*b).sqrt(),
+                hue: OklabHue::from_degrees(b.atan2(a).to_degrees()),
+            };
+        }
+    }
+    centroids
+}
+
+fn kmeans_init(points: &[Oklch<f32>], k: usize) -> Vec<Oklch<f32>> {
+    let mut c = vec![points[points.len()/4]];
+    for _ in 1..k {
+        let dists: Vec<f32> = points.iter()
+            .map(|p| c.iter().map(|q| oklch_dist(p, q)).fold(f32::MAX, f32::min))
+            .collect();
+        let next = dists.iter().enumerate()
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+            .map(|(i, _)| i).unwrap_or(0);
+        c.push(points[next]);
+    }
+    c
+}
+
+fn nearest(p: &Oklch<f32>, cs: &[Oklch<f32>]) -> usize {
+    cs.iter().enumerate()
+        .min_by(|(_, a), (_, b)| oklch_dist(p, a).partial_cmp(&oklch_dist(p, b)).unwrap())
+        .map(|(i, _)| i).unwrap_or(0)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PASS 3 — PIXEL TRANSFER
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Blend a pixel using its segment weights.
 ///
-/// For each role, weight = membership[role] / sum(memberships).
-/// Lightness is ratio-preserved (orig_L / role_representative_L × target_L)
-/// so gradients within each region remain smooth.
+/// For each segment (bg, edge, subject):
+///   1. Find the best-matching cluster→target mapping for this pixel
+///      within that segment's pool (inverse-distance weighted)
+///   2. Weight the result by the segment's membership for this pixel
 ///
-/// Hue + chroma blended in cartesian (a,b) Oklab space.
-fn blend_pixel(
+/// Lightness is ratio-preserved within each segment's transfer.
+/// Final blend is in cartesian (a,b) Oklab space — no hue wrap artifacts.
+fn blend_segments(
     orig: Oklch<f32>,
-    memberships: &[f32; 6],
-    role_colors: &[(PixelRole, Oklch<f32>)],
+    w_bg: f32,
+    w_edge: f32,
+    w_subj: f32,
+    bg_mappings: &[(Oklch<f32>, Oklch<f32>)],
+    subj_mappings: &[(Oklch<f32>, Oklch<f32>)],
+    edge_color: Oklch<f32>,
 ) -> Rgb<u8> {
-    let total_m: f32 = memberships.iter().sum();
-    if total_m < EPSILON {
-        // Fully unclassified pixel — map to surface as fallback
-        return oklch_to_rgb(&role_colors[1].1);
+    let total_seg = w_bg + w_edge + w_subj;
+    if total_seg < EPSILON {
+        return oklch_to_rgb(&edge_color);
     }
 
     let mut out_l = 0.0f32;
     let mut out_a = 0.0f32;
     let mut out_b = 0.0f32;
+
+    // Background contribution
+    if w_bg > 1e-3 {
+        let (tl, ta, tb) = transfer_from_mappings(orig, bg_mappings);
+        let wb = w_bg / total_seg;
+        out_l += wb * tl;
+        out_a += wb * ta;
+        out_b += wb * tb;
+    }
+
+    // Edge contribution (fixed color, lightness ratio-preserved)
+    if w_edge > 1e-3 {
+        let we = w_edge / total_seg;
+        let l_ratio = if orig.l > 0.01 { (orig.l / edge_color.l.max(0.01)).clamp(0.5, 2.0) } else { 1.0 };
+        let mapped_l = (edge_color.l * l_ratio).clamp(0.0, 1.0);
+        let (ta, tb) = hue_to_ab(edge_color.chroma, edge_color.hue);
+        out_l += we * mapped_l;
+        out_a += we * ta;
+        out_b += we * tb;
+    }
+
+    // Subject contribution
+    if w_subj > 1e-3 {
+        let (tl, ta, tb) = transfer_from_mappings(orig, subj_mappings);
+        let ws = w_subj / total_seg;
+        out_l += ws * tl;
+        out_a += ws * ta;
+        out_b += ws * tb;
+    }
+
+    let final_l = out_l.clamp(0.0, 1.0);
+    let final_chroma = (out_a*out_a + out_b*out_b).sqrt().clamp(0.0, 0.5);
+    let final_hue = OklabHue::from_degrees(out_b.atan2(out_a).to_degrees());
+    oklch_to_rgb(&Oklch { l: final_l, chroma: final_chroma, hue: final_hue })
+}
+
+/// Inverse-power-distance weighted transfer within one segment's mappings.
+/// Returns (mapped_L, a, b) in Oklab cartesian space.
+fn transfer_from_mappings(
+    orig: Oklch<f32>,
+    mappings: &[(Oklch<f32>, Oklch<f32>)],
+) -> (f32, f32, f32) {
+    if mappings.is_empty() {
+        return (orig.l, 0.0, 0.0);
+    }
+
     let mut total_w = 0.0f32;
+    let mut out_l = 0.0f32;
+    let mut out_a = 0.0f32;
+    let mut out_b = 0.0f32;
 
-    for (i, (_, tgt)) in role_colors.iter().enumerate() {
-        let w = memberships[i] / total_m;
-        if w < 1e-4 { continue; }
-
-        // Ratio-preserve lightness within the region.
-        // We use the target's own L as the "representative" source L,
-        // scaled by the original pixel's relative brightness.
-        // Since we don't have a per-role source L representative here,
-        // we use the original pixel L directly, scaled toward the target.
-        // This blends orig_L and tgt_L proportionally to membership strength.
-        let mapped_l = (orig.l * (1.0 - w * 0.5) + tgt.l * w * 0.5).clamp(0.0, 1.0);
-
+    for (src, tgt) in mappings {
+        let dist = oklch_dist(&orig, src).max(EPSILON);
+        let w = 1.0 / dist.powf(SHARPNESS);
+        let l_ratio = if src.l > 0.01 { (orig.l / src.l).clamp(0.5, 2.0) } else { 1.0 };
+        let mapped_l = (tgt.l * l_ratio).clamp(0.0, 1.0);
         let (ta, tb) = hue_to_ab(tgt.chroma, tgt.hue);
         out_l += w * mapped_l;
         out_a += w * ta;
@@ -347,83 +460,41 @@ fn blend_pixel(
         total_w += w;
     }
 
-    let final_l = (out_l / total_w).clamp(0.0, 1.0);
-    let a = out_a / total_w;
-    let b = out_b / total_w;
-    let final_chroma = (a * a + b * b).sqrt().clamp(0.0, 0.5);
-    let final_hue = OklabHue::from_degrees(b.atan2(a).to_degrees());
-
-    oklch_to_rgb(&Oklch { l: final_l, chroma: final_chroma, hue: final_hue })
+    (out_l / total_w, out_a / total_w, out_b / total_w)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// IMAGE PROCESSING HELPERS
+// HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Smooth Hermite interpolation between edge0 and edge1.
-/// Returns 0 for t <= edge0, 1 for t >= edge1, smooth curve between.
-fn smoothstep(edge0: f32, edge1: f32, t: f32) -> f32 {
-    let x = ((t - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
-    x * x * (3.0 - 2.0 * x)
+fn oklch_dist(a: &Oklch<f32>, b: &Oklch<f32>) -> f32 {
+    let (aa, ab) = hue_to_ab(a.chroma, a.hue);
+    let (ba, bb) = hue_to_ab(b.chroma, b.hue);
+    let dl = a.l - b.l;
+    let da = aa - ba;
+    let db = ab - bb;
+    (dl*dl + da*da + db*db).sqrt()
 }
-
-/// Separable box blur on a flat f32 image.
-/// Approximates Gaussian blur. Two passes: horizontal then vertical.
-fn box_blur(input: &[f32], width: u32, height: u32, radius: u32) -> Vec<f32> {
-    let w = width as usize;
-    let h = height as usize;
-    let r = radius as usize;
-
-    // Horizontal pass
-    let mut horiz = vec![0.0f32; w * h];
-    for y in 0..h {
-        for x in 0..w {
-            let lo = x.saturating_sub(r);
-            let hi = (x + r).min(w - 1);
-            let count = (hi - lo + 1) as f32;
-            let sum: f32 = (lo..=hi).map(|xx| input[y * w + xx]).sum();
-            horiz[y * w + x] = sum / count;
-        }
-    }
-
-    // Vertical pass
-    let mut result = vec![0.0f32; w * h];
-    for y in 0..h {
-        for x in 0..w {
-            let lo = y.saturating_sub(r);
-            let hi = (y + r).min(h - 1);
-            let count = (hi - lo + 1) as f32;
-            let sum: f32 = (lo..=hi).map(|yy| horiz[yy * w + x]).sum();
-            result[y * w + x] = sum / count;
-        }
-    }
-
-    result
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// COLOR HELPERS
-// ─────────────────────────────────────────────────────────────────────────────
 
 fn hue_to_ab(chroma: f32, hue: OklabHue<f32>) -> (f32, f32) {
-    let rad = hue.into_radians();
-    (chroma * rad.cos(), chroma * rad.sin())
+    let r = hue.into_radians();
+    (chroma * r.cos(), chroma * r.sin())
 }
 
 fn rgb_arr_to_oklch(arr: [u8; 3]) -> Oklch<f32> { rgb_to_oklch(&Rgb(arr)) }
 
 fn rgb_to_oklch(p: &Rgb<u8>) -> Oklch<f32> {
-    let srgb = Srgb::new(p[0] as f32 / 255.0, p[1] as f32 / 255.0, p[2] as f32 / 255.0);
-    Oklch::from_color(srgb.into_linear())
+    let s = Srgb::new(p[0] as f32/255.0, p[1] as f32/255.0, p[2] as f32/255.0);
+    Oklch::from_color(s.into_linear())
 }
 
 fn oklch_to_rgb(c: &Oklch<f32>) -> Rgb<u8> {
     let linear: palette::LinSrgb<f32> = (*c).into_color();
-    let srgb: Srgb<f32> = linear.into_encoding();
+    let s: Srgb<f32> = linear.into_encoding();
     Rgb([
-        (srgb.red   * 255.0).round().clamp(0.0, 255.0) as u8,
-        (srgb.green * 255.0).round().clamp(0.0, 255.0) as u8,
-        (srgb.blue  * 255.0).round().clamp(0.0, 255.0) as u8,
+        (s.red   * 255.0).round().clamp(0.0, 255.0) as u8,
+        (s.green * 255.0).round().clamp(0.0, 255.0) as u8,
+        (s.blue  * 255.0).round().clamp(0.0, 255.0) as u8,
     ])
 }
 
@@ -438,13 +509,13 @@ mod tests {
 
     fn test_theme() -> NoctaliaTheme {
         NoctaliaTheme {
-            primary:            [180, 50,  220],
-            on_primary:         [255, 255, 255],
-            surface:            [30,  20,  40 ],
-            on_surface:         [220, 210, 230],
-            surface_variant:    [60,  50,  80 ],
-            on_surface_variant: [200, 190, 210],
-            error:              [220, 50,  50 ],
+            primary:            [100, 50,  200],
+            on_primary:         [240, 230, 255],
+            surface:            [20,  15,  35 ],
+            on_surface:         [180, 170, 200],
+            surface_variant:    [45,  35,  65 ],
+            on_surface_variant: [160, 150, 185],
+            error:              [200, 50,  50 ],
         }
     }
 
@@ -456,61 +527,79 @@ mod tests {
     }
 
     #[test]
-    fn test_gradient_stays_directional() {
-        // Dark-to-light gradient should stay directional after recolor
-        let mut img = RgbImage::new(64, 64);
-        for y in 0..64u32 {
-            for x in 0..64u32 {
-                let v = (x * 4).min(255) as u8;
-                img.put_pixel(x, y, Rgb([v, v, v]));
+    fn test_dark_corner_stays_dark() {
+        // A dark near-black corner pixel must not map to a bright or
+        // highly-chromatic color regardless of the theme.
+        let mut img = RgbImage::new(128, 128);
+        // Dark corners, bright center
+        for y in 0..128u32 {
+            for x in 0..128u32 {
+                let cx = (x as i32 - 64).abs();
+                let cy = (y as i32 - 64).abs();
+                let v = (255 - (cx + cy).min(120) * 2) as u8;
+                img.put_pixel(x, y, Rgb([v/8, v/8, v/8]));
             }
         }
         let result = recolor_wallpaper(&img, &test_theme());
-        let left  = rgb_to_oklch(result.get_pixel(2, 32));
-        let right = rgb_to_oklch(result.get_pixel(61, 32));
-        assert!(left.l <= right.l + 0.1,
-            "gradient direction should be preserved: L_left={} L_right={}", left.l, right.l);
+        // Corner pixel should still be dark
+        let corner = rgb_to_oklch(result.get_pixel(0, 0));
+        assert!(corner.l < 0.35, "corner should stay dark, got L={}", corner.l);
     }
 
     #[test]
-    fn test_edge_detection_fires_on_sharp_boundary() {
-        // Image with a hard black/white boundary should produce edge pixels
-        let w = 64u32;
-        let h = 64u32;
+    fn test_edge_map_fires_on_boundary() {
+        let w = 64u32; let h = 64u32;
         let mut img = RgbImage::new(w, h);
-        for y in 0..h {
-            for x in 0..w {
-                let v = if x < w/2 { 0u8 } else { 255u8 };
-                img.put_pixel(x, y, Rgb([v, v, v]));
-            }
+        for y in 0..h { for x in 0..w {
+            img.put_pixel(x, y, Rgb([if x < w/2 { 0 } else { 255 }, 0, 0]));
+        }}
+        let l = compute_lightness_map(&img);
+        let e = compute_edge_map(&l, w, h);
+        // Boundary column should have high edge value
+        let boundary_edge = e[(32*w+31) as usize];
+        assert!(boundary_edge > 0.3, "boundary should have high edge, got {}", boundary_edge);
+    }
+
+    #[test]
+    fn test_bg_pool_excludes_bright_accent() {
+        // Background pool must only contain dark/achromatic colors
+        let theme = test_theme();
+        let pool = background_pool(&theme);
+        for c in &pool {
+            assert!(c.l < 0.6, "bg pool color should be dark, got L={}", c.l);
         }
-        let lightness = compute_lightness_map(&img);
-        let saliency = compute_saliency_map(&lightness, w, h);
-        let role_maps = compute_role_memberships(&lightness, &vec![0.0; (w*h) as usize], &saliency, w, h);
-        // The edge column (x=31 or x=32) should have significant edge membership
-        let edge_membership = role_maps[(32 * w + 31) as usize][2]; // slot 2 = Edge
-        assert!(edge_membership > 0.3,
-            "sharp boundary should produce edge membership, got {}", edge_membership);
     }
 
     #[test]
-    fn test_center_pixel_is_more_salient_than_corner() {
-        let w = 64u32;
-        let h = 64u32;
-        // Uniform grey image — saliency should be dominated by center-proximity
+    fn test_subject_pool_contains_chromatic() {
+        // Subject pool should contain the primary (most chromatic) color
+        let theme = test_theme();
+        let pool = subject_pool(&theme);
+        let max_chroma = pool.iter().map(|c| c.chroma).fold(0.0f32, f32::max);
+        assert!(max_chroma > 0.05, "subject pool should have chromatic colors");
+    }
+
+    #[test]
+    fn test_gradient_monotone() {
+        let mut img = RgbImage::new(128, 1);
+        for x in 0..128u32 {
+            let v = (x * 2) as u8;
+            img.put_pixel(x, 0, Rgb([v, v, v]));
+        }
+        let result = recolor_wallpaper(&img, &test_theme());
+        let left  = rgb_to_oklch(result.get_pixel(5, 0));
+        let right = rgb_to_oklch(result.get_pixel(122, 0));
+        assert!(left.l < right.l + 0.1,
+            "gradient should stay directional: L_left={} L_right={}", left.l, right.l);
+    }
+
+    #[test]
+    fn test_center_more_salient_than_corner() {
+        let w = 128u32; let h = 128u32;
         let img = RgbImage::from_pixel(w, h, Rgb([128u8, 128, 128]));
-        let lightness = compute_lightness_map(&img);
-        let saliency = compute_saliency_map(&lightness, w, h);
-        let center_s = saliency[(h/2 * w + w/2) as usize];
-        let corner_s = saliency[0];
-        assert!(center_s > corner_s,
-            "center should be more salient than corner: center={} corner={}", center_s, corner_s);
-    }
-
-    #[test]
-    fn test_smoothstep_bounds() {
-        assert!((smoothstep(0.0, 1.0, 0.0) - 0.0).abs() < 1e-5);
-        assert!((smoothstep(0.0, 1.0, 1.0) - 1.0).abs() < 1e-5);
-        assert!((smoothstep(0.0, 1.0, 0.5) - 0.5).abs() < 1e-5);
+        let l = compute_lightness_map(&img);
+        let s = compute_saliency_map(&l, w, h);
+        assert!(s[(h/2*w+w/2) as usize] > s[0],
+            "center should be more salient than corner");
     }
 }
