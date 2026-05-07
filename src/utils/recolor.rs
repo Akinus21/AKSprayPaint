@@ -1,6 +1,5 @@
 use image::{Rgb, RgbImage};
 use palette::{FromColor, IntoColor, Oklch, OklabHue, Srgb};
-use std::io::Write;
 
 use akspraypaint::NoctaliaTheme;
 
@@ -157,9 +156,9 @@ Each element must have exactly these fields:
 
 Example response format:
 [
-  {{"source_hex": "#1a1a1f", "theme_slot": "surface"}},
-  {{"source_hex": "#eff08a", "theme_slot": "on_surface_variant"}},
-  {{"source_hex": "#8890d0", "theme_slot": "primary"}}
+  {"source_hex": "#1a1a1f", "theme_slot": "surface"},
+  {"source_hex": "#eff08a", "theme_slot": "on_surface_variant"},
+  {"source_hex": "#8890d0", "theme_slot": "primary"}
 ]
 
 Identify at least 4 and at most 8 color regions. Include the background, the main subject, outlines, and any highlights."#,
@@ -174,7 +173,7 @@ fn call_ollama(base64_img: &str, prompt: &str) -> Result<String, String> {
     let endpoint = format!("{}/api/generate", url);
 
     let body = format!(
-        r#"{{"model":"{}","prompt":{},"images":["{}"],"stream":false,"options":{{"num_predict":512}}}}"#,
+        r#"{{"model":"{}","prompt":{},"images":["{}"],"stream":false,"options":{{"num_predict":512}}}"#,
         OLLAMA_MODEL,
         serde_json::to_string(prompt).map_err(|e| e.to_string())?,
         base64_img,
@@ -225,7 +224,6 @@ fn extract_ollama_response(raw: &str) -> Result<String, String> {
     // Unescape the JSON string value
     let unescaped = serde_json::from_str::<String>(&{
         // Find the end of the string
-        let mut depth = 0i32;
         let mut in_str = false;
         let mut end = 1;
         let chars: Vec<char> = rest.chars().collect();
