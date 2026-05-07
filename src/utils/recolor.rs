@@ -3,11 +3,18 @@ use palette::{FromColor, IntoColor, Oklch, OklabHue, Srgb};
 
 use akspraypaint::NoctaliaTheme;
 
+/// Recolor a wallpaper to match a noctalia theme.
+///
+/// Strategy: for each pixel, find the "closest" theme hue bucket, then
+/// rotate the pixel's hue to match while preserving its lightness and a
+/// blended chroma. Achromatic/near-grey pixels are instead mapped to the
+/// theme's surface colors by lightness alone, which keeps gradients smooth.
 pub fn recolor_wallpaper(input: &RgbImage, theme: &NoctaliaTheme) -> RgbImage {
+    // Build palette entries as Oklch
     let palette: Vec<Oklch<f32>> = theme
         .palette()
         .into_iter()
-        .map(rgb_arr_to_oklch)
+        .map(|c| rgb_arr_to_oklch(c))
         .collect();
 
     let (width, height) = input.dimensions();
@@ -21,10 +28,13 @@ pub fn recolor_wallpaper(input: &RgbImage, theme: &NoctaliaTheme) -> RgbImage {
     output
 }
 
+/// Map a single pixel's Oklch value to the theme palette.
 fn map_pixel(orig: Oklch<f32>, palette: &[Oklch<f32>]) -> Rgb<u8> {
-    const CHROMA_THRESHOLD: f32 = 0.04;
+    const CHROMA_THRESHOLD: f32 = 0.04; // below this = "grey/achromatic"
 
     if orig.chroma < CHROMA_THRESHOLD {
+        // --- Achromatic path: map by lightness to the nearest surface tone ---
+        // Find the palette entry whose lightness is closest.
         let target = palette
             .iter()
             .min_by(|a, b| {
@@ -34,6 +44,8 @@ fn map_pixel(orig: Oklch<f32>, palette: &[Oklch<f32>]) -> Rgb<u8> {
             })
             .unwrap();
 
+        // Preserve original lightness, adopt target hue & small chroma so
+        // the background doesn't become a flat slab of colour.
         let out = Oklch {
             l: orig.l,
             chroma: (target.chroma * 0.15).min(0.04),
@@ -42,6 +54,8 @@ fn map_pixel(orig: Oklch<f32>, palette: &[Oklch<f32>]) -> Rgb<u8> {
         return oklch_to_rgb(&out);
     }
 
+    // --- Chromatic path: rotate hue, preserve lightness, blend chroma ---
+    // Find the palette entry whose hue is closest (circular distance).
     let target = palette
         .iter()
         .min_by(|a, b| {
@@ -53,19 +67,18 @@ fn map_pixel(orig: Oklch<f32>, palette: &[Oklch<f32>]) -> Rgb<u8> {
 
     let out = Oklch {
         l: orig.l,
+        // Blend chroma: keep most of original so contrast/saturation is preserved,
+        // nudge toward theme chroma so very different saturations converge a bit.
         chroma: (orig.chroma * 0.7 + target.chroma * 0.3).clamp(0.0, 0.5),
         hue: target.hue,
     };
     oklch_to_rgb(&out)
 }
 
+/// Circular distance between two hues (0..=180 range result).
 fn hue_dist(a: OklabHue<f32>, b: OklabHue<f32>) -> f32 {
     let diff = (a.into_degrees() - b.into_degrees()).abs() % 360.0;
-    if diff > 180.0 {
-        360.0 - diff
-    } else {
-        diff
-    }
+    if diff > 180.0 { 360.0 - diff } else { diff }
 }
 
 fn rgb_arr_to_oklch(arr: [u8; 3]) -> Oklch<f32> {
@@ -117,6 +130,7 @@ mod tests {
 
     #[test]
     fn test_achromatic_stays_dark() {
+        // A near-black pixel should stay dark after recoloring
         let mut img = RgbImage::new(1, 1);
         img.put_pixel(0, 0, Rgb([10, 10, 10]));
         let theme = akspraypaint::NoctaliaTheme {
@@ -130,6 +144,7 @@ mod tests {
         };
         let result = recolor_wallpaper(&img, &theme);
         let p = result.get_pixel(0, 0);
+        // Should stay very dark (L preserved)
         let out = rgb_to_oklch(p);
         assert!(out.l < 0.15, "dark pixel should remain dark, got L={}", out.l);
     }
