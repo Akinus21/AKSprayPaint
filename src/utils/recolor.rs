@@ -1,5 +1,5 @@
 use image::{Rgb, RgbImage};
-use palette::{FromColor, Oklch, OklchHue, Srgb};
+use palette::{FromColor, Oklch, OklabHue, Srgb};
 
 pub fn recolor_wallpaper(
     input: &RgbImage,
@@ -99,19 +99,19 @@ fn rgb_to_oklch(p: &Rgb<u8>) -> Oklch<f32> {
 }
 
 fn oklch_to_rgb(c: &Oklch<f32>) -> Rgb<u8> {
-    let linear = Srgb::from_color(*c);
-    let encoded = linear.into_encoding();
+    let linear: Srgb<f32> = Srgb::from_color(*c);
+    let gamma = linear.into_linear().into_encoding();
     Rgb([
-        (encoded.red * 255.0).round().clamp(0.0, 255.0) as u8,
-        (encoded.green * 255.0).round().clamp(0.0, 255.0) as u8,
-        (encoded.blue * 255.0).round().clamp(0.0, 255.0) as u8,
+        (gamma.red * 255.0).round().clamp(0.0, 255.0) as u8,
+        (gamma.green * 255.0).round().clamp(0.0, 255.0) as u8,
+        (gamma.blue * 255.0).round().clamp(0.0, 255.0) as u8,
     ])
 }
 
 fn oklch_distance(a: &Oklch<f32>, b: &Oklch<f32>) -> f32 {
     let dl = a.l - b.l;
-    let da = a.chroma * a.hue.to_radians().cos() - b.chroma * b.hue.to_radians().cos();
-    let db = a.chroma * a.hue.to_radians().sin() - b.chroma * b.hue.to_radians().sin();
+    let da = a.chroma * a.hue.into_radians().cos() - b.chroma * b.hue.into_radians().cos();
+    let db = a.chroma * a.hue.into_radians().sin() - b.chroma * b.hue.into_radians().sin();
     dl * dl + da * da + db * db
 }
 
@@ -169,7 +169,7 @@ fn kmeans_luminance(
                 means[j] = Oklch::new(
                     (sums[j].0 / nf).clamp(0.0, 1.0),
                     (sums[j].1 / nf).clamp(0.0, 0.5),
-                    OklchHue::from_degrees(avg_hue),
+                    OklabHue::from_degrees(avg_hue),
                 );
             }
         }
