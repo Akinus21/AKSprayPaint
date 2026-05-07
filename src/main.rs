@@ -6,8 +6,10 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(name = "akspraypaint", about = "Recolors wallpaper to match noctalia theme")]
 struct Cli {
+    #[arg(long, help = "Kill the running watch daemon")]
+    disable: bool,
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand)]
@@ -34,7 +36,23 @@ enum Command {
 fn main() {
     let cli = Cli::parse();
 
-    let result = match cli.command {
+    if cli.disable {
+        if let Err(e) = utils::kill_watch_daemon() {
+            eprintln!("Error: {}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    let command = match cli.command {
+        Some(c) => c,
+        None => {
+            eprintln!("Error: no command specified. Use --help for usage.");
+            std::process::exit(1);
+        }
+    };
+
+    let result = match command {
         Command::Run { wallpaper } => commands::run::run(wallpaper.as_deref()),
         Command::Watch => commands::watch::watch(),
         Command::Set { path } => commands::set::set(&path),

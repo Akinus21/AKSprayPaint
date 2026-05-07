@@ -1,4 +1,4 @@
-use crate::utils::{theme, wallpaper};
+use crate::utils::{daemon, theme, wallpaper};
 use inotify::{EventMask, Inotify, WatchMask};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -6,6 +6,8 @@ use std::time::{Duration, Instant};
 const DEBOUNCE_MS: u64 = 500;
 
 pub fn watch() -> Result<(), String> {
+    daemon::write_pid()?;
+
     let noctalia_dir = theme::noctalia_dir()
         .ok_or_else(|| "noctalia config directory not found".to_string())?;
 
@@ -13,6 +15,7 @@ pub fn watch() -> Result<(), String> {
         .ok_or_else(|| "could not detect current wallpaper".to_string())?;
     eprintln!("Watching theme: {}", noctalia_dir.display());
     eprintln!("Current wallpaper: {}", wp_path.display());
+    eprintln!("Daemon started with PID {}", std::process::id());
 
     let mut inotify =
         Inotify::init().map_err(|e| format!("failed to init inotify: {}", e))?;
