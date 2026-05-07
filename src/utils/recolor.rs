@@ -73,27 +73,34 @@ fn parse_matugen_json(json: &str) -> Result<MatugenTheme, String> {
     let value: serde_json::Value = serde_json::from_str(json)
         .map_err(|e| format!("failed to parse matugen JSON: {} — raw: {}", e, &json[..json.len().min(500)]))?;
 
-    fn get_hex(obj: &serde_json::Map<String, serde_json::Value>, key: &str) -> Result<[u8; 3], String> {
-        let hex = obj.get(key)
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                let available: Vec<_> = obj.keys().collect();
-                format!("missing key: {} — available keys: {:?}", key, available)
-            })?;
-        parse_hex(hex)
-    }
-
     let obj = value.as_object()
         .ok_or_else(|| "matugen output is not an object".to_string())?;
 
+    let palettes = obj.get("palettes")
+        .ok_or_else(|| "missing 'palettes' key".to_string())?
+        .as_object()
+        .ok_or_else(|| "'palettes' is not an object".to_string())?;
+
+    let colors = palettes.get("colors")
+        .ok_or_else(|| "missing 'palettes.colors' key".to_string())?
+        .as_object()
+        .ok_or_else(|| "'palettes.colors' is not an object".to_string())?;
+
+    fn get_hex(obj: &serde_json::Map<String, serde_json::Value>, key: &str) -> Result<[u8; 3], String> {
+        let hex = obj.get(key)
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| format!("missing key: {}", key))?;
+        parse_hex(hex)
+    }
+
     Ok(MatugenTheme {
-        primary: get_hex(obj, "primary")?,
-        on_primary: get_hex(obj, "on_primary")?,
-        surface: get_hex(obj, "surface")?,
-        on_surface: get_hex(obj, "on_surface")?,
-        surface_variant: get_hex(obj, "surface_variant")?,
-        on_surface_variant: get_hex(obj, "on_surface_variant")?,
-        error: get_hex(obj, "error").unwrap_or([200, 50, 50]),
+        primary: get_hex(colors, "primary")?,
+        on_primary: get_hex(colors, "on_primary")?,
+        surface: get_hex(colors, "surface")?,
+        on_surface: get_hex(colors, "on_surface")?,
+        surface_variant: get_hex(colors, "surface_variant")?,
+        on_surface_variant: get_hex(colors, "on_surface_variant")?,
+        error: get_hex(colors, "error").unwrap_or([200, 50, 50]),
     })
 }
 
