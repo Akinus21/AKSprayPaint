@@ -6,102 +6,43 @@ pub fn recolor_wallpaper(
     target_palette: &[[u8; 3]],
 ) -> RgbImage {
     let (width, height) = input.dimensions();
-    let total = (width as usize) * (height as usize);
-    let max_samples = 200_000usize;
-    let stride = if total > max_samples {
-        (total / max_samples).max(1)
-    } else {
-        1
-    };
 
-    const SHADOW_L: f32 = 0.05;
-    const SHADOW_C: f32 = 0.05;
-    const HIGHLIGHT_L: f32 = 0.95;
-    const HIGHLIGHT_C: f32 = 0.05;
-
-    let mut samples: Vec<Oklch<f32>> = Vec::with_capacity(total / stride);
-    let mut flat_idx: Vec<usize> = Vec::with_capacity(total / stride);
-    for y in 0..height {
-        for x in 0..width {
-            let idx = (y as usize) * (width as usize) + (x as usize);
-            if idx % stride == 0 {
-                flat_idx.push(idx);
-                let p = input.get_pixel(x, y);
-                let c: Oklch<f32> = rgb_to_oklch(p);
-                let is_shadow = c.l < SHADOW_L && c.chroma < SHADOW_C;
-                if !is_shadow {
-                    samples.push(c);
-                }
-            }
-        }
-    }
-
-    let target_oklch: Vec<Oklch<f32>> = target_palette
+    let mut palette_lch: Vec<(f32, Oklch<f32>)> = target_palette
         .iter()
         .map(|c| {
-            let rgb = Rgb(*c);
-            rgb_to_oklch(&rgb)
+            let lch = rgb_to_oklch(&Rgb(*c));
+            (lch.l, lch)
         })
         .collect();
+    palette_lch.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
 
-    let k = target_oklch.len();
-    let mut means = pick_spread_means(&samples, k);
-    let assignments = kmeans_luminance(&samples, &mut means, 20);
-
-    let mut cluster_map: Vec<usize> = vec![0; k];
-    for ci in 0..k {
-        let closest = target_oklch
-            .iter()
-            .enumerate()
-            .min_by(|(_, a), (_, b)| {
-                oklch_distance(&means[ci], a)
-                    .partial_cmp(&oklch_distance(&means[ci], b))
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .map(|(idx, _)| idx)
-            .unwrap_or(0);
-        cluster_map[ci] = closest;
+    let n = palette_lch.len();
+    if n < 2 {
+        let mut output = RgbImage::new(width, height);
+        for y in 0..height {
+            for x in 0..width {
+                output.put_pixel(x, y, *input.get_pixel(x, y));
+            }
+        }
+        return output;
     }
+
+    let step = (n - 1).max(1);
+    let indices: Vec<usize> = (0..n).step_by(step).collect();
+    let gradient: Vec<(f32, Oklch<f32>)> = indices
+        .iter()
+        .copied()
+        .map(|i| (palette_lch[i].0, palette_lch[i].1))
+        .collect();
 
     let mut output = RgbImage::new(width, height);
     for y in 0..height {
         for x in 0..width {
-            let idx = (y as usize) * (width as usize) + (x as usize);
-            let sample_idx = idx / stride;
-
-            let p = input.get_pixel(x, y);
-            let c: Oklch<f32> = rgb_to_oklch(p);
-
-            if c.l < SHADOW_L && c.chroma < SHADOW_C {
-                output.put_pixel(x, y, *p);
-                continue;
-            }
-
-            if c.l > HIGHLIGHT_L && c.chroma < HIGHLIGHT_C {
-                output.put_pixel(x, y, *p);
-                continue;
-            }
-
-            let cluster = if sample_idx < assignments.len() {
-                assignments[sample_idx]
-            } else {
-                0
-            };
-            let target = &target_oklch[cluster_map[cluster]];
-
-            let base_lum = means[cluster].l;
-            let lum_ratio = if base_lum > 0.001 {
-                (c.l / base_lum).clamp(0.3, 2.5)
-            } else {
-                1.0
-            };
-
-            let new = Oklch {
-                l: (target.l * lum_ratio).clamp(0.0, 1.0),
-                chroma: target.chroma * 0.8 + c.chroma * 0.2,
-                hue: target.hue,
-            };
-            output.put_pixel(x, y, oklch_to_rgb(&new));
+            let pixel = input.get_pixel(x, y);
+            let lch = rgb_to_oklch(pixel);
+            let luminance = (lch.l + 0.05).clamp(0.0, 1.0);
+            let theme = interpolate_oklch(&gradient, luminance);
+            output.put_pixel(x, y, oklch_to_rgb(&theme));
         }
     }
     output
@@ -127,73 +68,43 @@ fn oklch_to_rgb(c: &Oklch<f32>) -> Rgb<u8> {
     ])
 }
 
-fn oklch_distance(a: &Oklch<f32>, b: &Oklch<f32>) -> f32 {
-    let dl = a.l - b.l;
-    let da = a.chroma * a.hue.into_radians().cos() - b.chroma * b.hue.into_radians().cos();
-    let db = a.chroma * a.hue.into_radians().sin() - b.chroma * b.hue.into_radians().sin();
-    dl * dl + da * da + db * db
-}
-
-fn pick_spread_means(samples: &[Oklch<f32>], k: usize) -> Vec<Oklch<f32>> {
-    let mut means = vec![samples[0]];
-    for _ in 1..k {
-        let mut best = samples[0];
-        let mut best_dist = 0.0f32;
-        for &s in samples {
-            let min_d = means.iter().map(|m| oklch_distance(&s, m)).fold(f32::MAX, f32::min);
-            if min_d > best_dist {
-                best_dist = min_d;
-                best = s;
-            }
-        }
-        means.push(best);
+fn interpolate_oklch(gradient: &[(f32, Oklch<f32>)], luminance: f32) -> Oklch<f32> {
+    if gradient.is_empty() {
+        return Oklch::new(0.5, 0.0, OklabHue::from_degrees(0.0));
     }
-    means
-}
+    if gradient.len() == 1 {
+        return gradient[0].1;
+    }
 
-fn kmeans_luminance(
-    samples: &[Oklch<f32>],
-    means: &mut [Oklch<f32>],
-    iters: usize,
-) -> Vec<usize> {
-    let n = samples.len();
-    let k = means.len();
-    let mut assignments = vec![0usize; n];
-    for _ in 0..iters {
-        for (i, &s) in samples.iter().enumerate() {
-            let mut best = 0;
-            let mut best_d = f32::MAX;
-            for (j, m) in means.iter().enumerate() {
-                let d = oklch_distance(&s, m);
-                if d < best_d {
-                    best_d = d;
-                    best = j;
-                }
-            }
-            assignments[i] = best;
-        }
-        let mut counts = vec![0usize; k];
-        let mut sums = vec![(0.0f32, 0.0f32, 0.0f32); k];
-        for (i, &s) in samples.iter().enumerate() {
-            let c = assignments[i];
-            counts[c] += 1;
-            sums[c].0 += s.l;
-            sums[c].1 += s.chroma;
-            sums[c].2 += s.hue.into_positive_degrees();
-        }
-        for j in 0..k {
-            if counts[j] > 0 {
-                let nf = counts[j] as f32;
-                let avg_hue = sums[j].2 / nf;
-                means[j] = Oklch::new(
-                    (sums[j].0 / nf).clamp(0.0, 1.0),
-                    (sums[j].1 / nf).clamp(0.0, 0.5),
-                    OklabHue::from_degrees(avg_hue),
-                );
-            }
+    if luminance <= gradient[0].0 {
+        return gradient[0].1;
+    }
+    if luminance >= gradient[gradient.len() - 1].0 {
+        return gradient[gradient.len() - 1].1;
+    }
+
+    for i in 0..gradient.len() - 1 {
+        let (l1, c1) = gradient[i];
+        let (l2, c2) = gradient[i + 1];
+        if luminance >= l1 && luminance <= l2 {
+            let t = if (l2 - l1).abs() > 0.0001 {
+                (luminance - l1) / (l2 - l1)
+            } else {
+                0.0
+            };
+            let t = t.clamp(0.0, 1.0);
+            return Oklch {
+                l: c1.l + (c2.l - c1.l) * t,
+                chroma: c1.chroma + (c2.chroma - c1.chroma) * t,
+                hue: OklabHue::from_degrees(
+                    c1.hue.into_positive_degrees()
+                        + (c2.hue.into_positive_degrees() - c1.hue.into_positive_degrees()) * t,
+                ),
+            };
         }
     }
-    assignments
+
+    gradient[gradient.len() - 1].1
 }
 
 #[cfg(test)]
