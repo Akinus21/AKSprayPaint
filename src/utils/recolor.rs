@@ -13,32 +13,17 @@ const MAX_SAMPLES: usize = 40_000;
 const SHARPNESS: f32 = 8.0;
 const EPSILON: f32 = 1e-6;
 
-/// Sobel gradient magnitude above this → edge pixel.
-const EDGE_THRESHOLD: f32 = 0.12;
-
-/// Saliency above this → subject pixel. Below → background.
-/// Soft transition between SALIENCY_BG_MAX and SALIENCY_FG_MIN.
-const SALIENCY_BG_MAX: f32 = 0.38;
+/// Saliency below this → definitely background.
+/// Above SALIENCY_FG_MIN → definitely subject.
+/// Between the two → soft blend.
+const SALIENCY_BG_MAX: f32 = 0.35;
 const SALIENCY_FG_MIN: f32 = 0.55;
 
-/// Box blur radius for smoothing saliency before segmentation.
-const BLUR_RADIUS: u32 = 12;
+/// Box blur radius for smoothing saliency map.
+const BLUR_RADIUS: u32 = 16;
 
-/// Center-bias weight in saliency. Subjects tend to be centered.
-const CENTER_WEIGHT: f32 = 0.55;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// SEGMENT
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Coarse 3-way segment for a pixel.
-/// Used to gate which theme color pool each pixel can draw from.
-#[derive(Clone, Copy, Debug)]
-enum Segment {
-    Background, // → only dark/achromatic theme colors
-    Edge,       // → on_surface theme color
-    Subject,    // → chromatic theme colors
-}
+/// Center-bias weight in saliency computation.
+const CENTER_WEIGHT: f32 = 0.6;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PUBLIC API
@@ -48,121 +33,161 @@ enum Segment {
 ///
 /// Works on any image — no hardcoded source colors.
 ///
-/// # Algorithm — three passes
+/// # Algorithm
 ///
-/// ## Pass 1 — CV segmentation
-/// Classify every pixel as Background, Edge, or Subject using:
-///   - Sobel edge detection on perceptual lightness (Oklch L)
-///   - Frequency-tuned saliency (contrast × center-proximity)
-///   - Box blur to smooth the saliency map
+/// ## Step 1 — CV background detection
+/// Use saliency (local contrast × center-proximity) to produce a per-pixel
+/// background weight in [0,1]. Pixels with low saliency are background;
+/// pixels with high saliency are subject. The saliency map is blurred to
+/// produce smooth boundaries.
 ///
-/// This produces a soft 3-way mask. Crucially, dark vignette corners are
-/// always Background regardless of their slight colour tint — the CV pass
-/// gates them out before any colour matching happens.
+/// Background pixels are processed entirely by CV:
+///   - Mapped directly to surface/surface_variant by lightness ratio
+///   - Never touch the hue-family matcher
+///   - No color bleed possible — they never see the accent colors
 ///
-/// ## Pass 2 — Hue-family matching within each segment
-/// Each segment only draws from a restricted pool of theme colors:
-///   Background → surface + surface_variant (dark/achromatic only)
-///   Edge       → on_surface
-///   Subject    → primary + on_primary + on_surface_variant (chromatic)
+/// ## Step 2 — Hue-family matching for subject pixels
+/// Non-background pixels (subject, outlines, highlights) go through
+/// hue-family matching exactly as in the best previous version:
+///   - K-means clusters extracted from the image
+///   - Achromatic clusters matched by lightness to achromatic theme colors
+///   - Chromatic clusters matched by nearest hue to chromatic theme colors
 ///
-/// Within each pool, k-means clusters from the source image are matched
-/// to theme colors by hue proximity. Because the pools are gated by the
-/// CV pass, green accent can never bleed into background pixels —
-/// they're in separate pools entirely.
-///
-/// ## Pass 3 — Smooth transfer
-/// Inverse-power-distance weighted blend using per-pixel segment weights.
-/// Lightness ratio-preserved so gradients remain smooth.
+/// ## Step 3 — Smooth blend
+/// Each pixel's final color = lerp(cv_color, hue_color, subject_weight)
+/// where subject_weight comes from the saliency map.
+/// This gives clean background with smooth transitions at region boundaries.
 pub fn recolor_wallpaper(input: &RgbImage, theme: &NoctaliaTheme) -> RgbImage {
     let (width, height) = input.dimensions();
     let n = (width * height) as usize;
 
-    // ── Pass 1: CV segmentation ───────────────────────────────────────────
+    // ── Step 1: CV background detection ──────────────────────────────────
     let lightness   = compute_lightness_map(input);
-    let edges       = compute_edge_map(&lightness, width, height);
     let saliency    = compute_saliency_map(&lightness, width, height);
     let saliency_sm = box_blur(&saliency, width, height, BLUR_RADIUS);
 
-    // Per-pixel soft weights for each segment: [bg, edge, subject]
-    let seg_weights = compute_segment_weights(&edges, &saliency_sm, n);
+    // Per-pixel subject weight: 0.0 = pure background, 1.0 = pure subject
+    let subject_weights: Vec<f32> = saliency_sm.iter()
+        .map(|&s| smoothstep(SALIENCY_BG_MAX, SALIENCY_FG_MIN, s))
+        .collect();
 
-    // ── Pass 2: hue-family matching per segment pool ──────────────────────
+    // Background colors: map lightness to surface/surface_variant
+    let surface         = rgb_arr_to_oklch(theme.surface);
+    let surface_variant = rgb_arr_to_oklch(theme.surface_variant);
+
+    // ── Step 2: hue-family matching for subject pixels ────────────────────
     let samples  = sample_pixels(input, MAX_SAMPLES);
     let clusters = kmeans(&samples, K, KMEANS_ITER);
 
-    // Background pool: dark/achromatic theme colors
-    // Subject pool:    chromatic theme colors
-    // Edge:            on_surface (fixed, no matching needed)
-    let bg_pool      = background_pool(theme);
-    let subject_pool = subject_pool(theme);
-    let edge_color   = rgb_arr_to_oklch(theme.on_surface);
+    let theme_colors: Vec<Oklch<f32>> = theme.palette()
+        .into_iter()
+        .map(rgb_arr_to_oklch)
+        .collect();
 
-    // Match clusters to each pool by hue proximity
-    let bg_mappings      = match_by_hue(&clusters, &bg_pool);
-    let subject_mappings = match_by_hue(&clusters, &subject_pool);
+    let hue_mappings = match_clusters(&clusters, &theme_colors);
 
-    // ── Pass 3: per-pixel transfer ────────────────────────────────────────
+    // ── Step 3: per-pixel blend ───────────────────────────────────────────
     let mut output = RgbImage::new(width, height);
     for y in 0..height {
         for x in 0..width {
             let idx = (y * width + x) as usize;
             let orig = rgb_to_oklch(input.get_pixel(x, y));
-            let [w_bg, w_edge, w_subj] = seg_weights[idx];
-            let pixel = blend_segments(
-                orig,
-                w_bg, w_edge, w_subj,
-                &bg_mappings,
-                &subject_mappings,
-                edge_color,
-            );
-            output.put_pixel(x, y, pixel);
+            let sw = subject_weights[idx];
+
+            // CV background color: blend surface_variant→surface by lightness
+            // Dark pixels → surface_variant, lighter pixels → surface
+            let bg_blend = smoothstep(surface_variant.l, surface.l.max(surface_variant.l + 0.01), orig.l);
+            let cv_color = blend_oklch(surface_variant, surface, bg_blend);
+
+            // Hue-family color for subject
+            let hue_color = transfer_pixel(orig, &hue_mappings);
+
+            // Final: lerp between cv_color and hue_color by subject weight
+            let final_color = blend_oklch(cv_color, hue_color, sw);
+            output.put_pixel(x, y, oklch_to_rgb(&final_color));
         }
     }
     output
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// THEME COLOR POOLS
+// STEP 1 — CV BACKGROUND DETECTION
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Background pool: the dark/base theme colors.
-/// These are the only colors background pixels can ever map to.
-/// Green accent is NOT in this list — that's how we prevent bleed.
-fn background_pool(theme: &NoctaliaTheme) -> Vec<Oklch<f32>> {
-    vec![
-        rgb_arr_to_oklch(theme.surface),
-        rgb_arr_to_oklch(theme.surface_variant),
-    ]
+fn compute_lightness_map(img: &RgbImage) -> Vec<f32> {
+    img.pixels().map(|p| rgb_to_oklch(p).l).collect()
 }
 
-/// Subject pool: the foreground/accent theme colors.
-/// These are what the owl, moon, and other subject elements map to.
-fn subject_pool(theme: &NoctaliaTheme) -> Vec<Oklch<f32>> {
-    vec![
-        rgb_arr_to_oklch(theme.primary),
-        rgb_arr_to_oklch(theme.on_primary),
-        rgb_arr_to_oklch(theme.on_surface_variant),
-    ]
+/// Saliency = local contrast × center-proximity, normalised to [0,1].
+/// Low saliency = background. High saliency = subject.
+fn compute_saliency_map(lightness: &[f32], width: u32, height: u32) -> Vec<f32> {
+    let n = (width * height) as usize;
+    let mean_l = lightness.iter().sum::<f32>() / n as f32;
+    let cx = width  as f32 / 2.0;
+    let cy = height as f32 / 2.0;
+    let max_dist = (cx*cx + cy*cy).sqrt();
+
+    let mut sal = vec![0.0f32; n];
+    for y in 0..height {
+        for x in 0..width {
+            let idx = (y * width + x) as usize;
+            let contrast = (lightness[idx] - mean_l).abs();
+            let dx = x as f32 - cx;
+            let dy = y as f32 - cy;
+            let center = 1.0 - ((dx*dx + dy*dy).sqrt() / max_dist).clamp(0.0, 1.0);
+            sal[idx] = (1.0 - CENTER_WEIGHT) * contrast + CENTER_WEIGHT * center;
+        }
+    }
+    let max_s = sal.iter().cloned().fold(0.0f32, f32::max).max(1e-6);
+    sal.iter_mut().for_each(|s| *s /= max_s);
+    sal
+}
+
+fn box_blur(input: &[f32], width: u32, height: u32, radius: u32) -> Vec<f32> {
+    let w = width as usize;
+    let h = height as usize;
+    let r = radius as usize;
+    let mut tmp = vec![0.0f32; w * h];
+    let mut out = vec![0.0f32; w * h];
+    for y in 0..h {
+        for x in 0..w {
+            let lo = x.saturating_sub(r);
+            let hi = (x + r).min(w - 1);
+            let n  = (hi - lo + 1) as f32;
+            tmp[y*w+x] = (lo..=hi).map(|xx| input[y*w+xx]).sum::<f32>() / n;
+        }
+    }
+    for y in 0..h {
+        for x in 0..w {
+            let lo = y.saturating_sub(r);
+            let hi = (y + r).min(h - 1);
+            let n  = (hi - lo + 1) as f32;
+            out[y*w+x] = (lo..=hi).map(|yy| tmp[yy*w+x]).sum::<f32>() / n;
+        }
+    }
+    out
+}
+
+fn smoothstep(lo: f32, hi: f32, t: f32) -> f32 {
+    let x = ((t - lo) / (hi - lo)).clamp(0.0, 1.0);
+    x * x * (3.0 - 2.0 * x)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PASS 2 — HUE-FAMILY MATCHING
+// STEP 2 — HUE-FAMILY MATCHING
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// For each cluster, find the pool color whose hue is nearest.
-/// For achromatic clusters (low chroma), fall back to nearest-L in pool.
-/// Returns (cluster, target) pairs for use in transfer_pixel.
-fn match_by_hue(
+/// Match clusters to theme colors:
+///   Achromatic clusters (low chroma) → nearest lightness among theme colors
+///   Chromatic clusters               → nearest hue among theme colors
+fn match_clusters(
     clusters: &[Oklch<f32>],
-    pool: &[Oklch<f32>],
+    theme_colors: &[Oklch<f32>],
 ) -> Vec<(Oklch<f32>, Oklch<f32>)> {
-    if pool.is_empty() { return vec![]; }
-
     clusters.iter().map(|&src| {
-        let target = if src.chroma < 0.05 {
-            // Achromatic: match by lightness
-            *pool.iter()
+        let target = if src.chroma < 0.06 {
+            // Achromatic: use lightness to find nearest theme color
+            *theme_colors.iter()
                 .min_by(|a, b| {
                     (a.l - src.l).abs()
                         .partial_cmp(&(b.l - src.l).abs())
@@ -170,8 +195,8 @@ fn match_by_hue(
                 })
                 .unwrap()
         } else {
-            // Chromatic: match by nearest hue
-            *pool.iter()
+            // Chromatic: use hue to find nearest theme color
+            *theme_colors.iter()
                 .min_by(|a, b| {
                     hue_dist(src.hue, a.hue)
                         .partial_cmp(&hue_dist(src.hue, b.hue))
@@ -189,119 +214,7 @@ fn hue_dist(a: OklabHue<f32>, b: OklabHue<f32>) -> f32 {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PASS 1 — CV SEGMENTATION
-// ─────────────────────────────────────────────────────────────────────────────
-
-fn compute_lightness_map(img: &RgbImage) -> Vec<f32> {
-    img.pixels().map(|p| rgb_to_oklch(p).l).collect()
-}
-
-/// Sobel edge detection on Oklch lightness. Returns normalised [0,1].
-fn compute_edge_map(lightness: &[f32], width: u32, height: u32) -> Vec<f32> {
-    let w = width as i32;
-    let h = height as i32;
-    let n = (width * height) as usize;
-    let mut edges = vec![0.0f32; n];
-
-    for y in 1..h-1 {
-        for x in 1..w-1 {
-            let px = |dy: i32, dx: i32| lightness[((y+dy)*w+(x+dx)) as usize];
-            let gx = -px(-1,-1) - 2.0*px(0,-1) - px(1,-1)
-                     +px(-1, 1) + 2.0*px(0, 1) + px(1, 1);
-            let gy = -px(-1,-1) - 2.0*px(-1,0) - px(-1,1)
-                     +px( 1,-1) + 2.0*px( 1,0) + px( 1,1);
-            edges[(y*w+x) as usize] = (gx*gx + gy*gy).sqrt();
-        }
-    }
-    let max_e = edges.iter().cloned().fold(0.0f32, f32::max).max(1e-6);
-    edges.iter_mut().for_each(|e| *e /= max_e);
-    edges
-}
-
-/// Frequency-tuned saliency: local contrast × center-proximity.
-fn compute_saliency_map(lightness: &[f32], width: u32, height: u32) -> Vec<f32> {
-    let n = (width * height) as usize;
-    let mean_l = lightness.iter().sum::<f32>() / n as f32;
-    let cx = width  as f32 / 2.0;
-    let cy = height as f32 / 2.0;
-    let max_dist = (cx*cx + cy*cy).sqrt();
-
-    let mut sal = vec![0.0f32; n];
-    for y in 0..height {
-        for x in 0..width {
-            let idx = (y*width+x) as usize;
-            let contrast = (lightness[idx] - mean_l).abs();
-            let dx = x as f32 - cx;
-            let dy = y as f32 - cy;
-            let center = 1.0 - ((dx*dx+dy*dy).sqrt() / max_dist).clamp(0.0, 1.0);
-            sal[idx] = (1.0 - CENTER_WEIGHT) * contrast + CENTER_WEIGHT * center;
-        }
-    }
-    let max_s = sal.iter().cloned().fold(0.0f32, f32::max).max(1e-6);
-    sal.iter_mut().for_each(|s| *s /= max_s);
-    sal
-}
-
-/// Compute per-pixel soft segment weights [bg, edge, subject].
-/// Sum of weights = 1.0 per pixel.
-fn compute_segment_weights(
-    edges: &[f32],
-    saliency: &[f32],
-    n: usize,
-) -> Vec<[f32; 3]> {
-    let mut weights = vec![[0.0f32; 3]; n];
-    for i in 0..n {
-        let e = edges[i];
-        let s = saliency[i];
-
-        // Edge membership: soft threshold
-        let edge_w = smoothstep(EDGE_THRESHOLD * 0.5, EDGE_THRESHOLD * 1.5, e);
-        let non_edge = 1.0 - edge_w;
-
-        // Subject vs background from saliency, on the non-edge portion
-        let subj_w = smoothstep(SALIENCY_BG_MAX, SALIENCY_FG_MIN, s) * non_edge;
-        let bg_w   = (1.0 - smoothstep(SALIENCY_BG_MAX, SALIENCY_FG_MIN, s)) * non_edge;
-
-        weights[i] = [bg_w, edge_w, subj_w];
-    }
-    weights
-}
-
-fn smoothstep(lo: f32, hi: f32, t: f32) -> f32 {
-    let x = ((t - lo) / (hi - lo)).clamp(0.0, 1.0);
-    x * x * (3.0 - 2.0 * x)
-}
-
-fn box_blur(input: &[f32], width: u32, height: u32, radius: u32) -> Vec<f32> {
-    let w = width as usize;
-    let h = height as usize;
-    let r = radius as usize;
-    let mut tmp = vec![0.0f32; w * h];
-    let mut out = vec![0.0f32; w * h];
-
-    // Horizontal
-    for y in 0..h {
-        for x in 0..w {
-            let lo = x.saturating_sub(r);
-            let hi = (x + r).min(w - 1);
-            let n = (hi - lo + 1) as f32;
-            tmp[y*w+x] = (lo..=hi).map(|xx| input[y*w+xx]).sum::<f32>() / n;
-        }
-    }
-    // Vertical
-    for y in 0..h {
-        for x in 0..w {
-            let lo = y.saturating_sub(r);
-            let hi = (y + r).min(h - 1);
-            let n = (hi - lo + 1) as f32;
-            out[y*w+x] = (lo..=hi).map(|yy| tmp[yy*w+x]).sum::<f32>() / n;
-        }
-    }
-    out
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// PASS 1 — K-MEANS
+// STEP 2 — K-MEANS
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn sample_pixels(img: &RgbImage, max_samples: usize) -> Vec<Oklch<f32>> {
@@ -318,12 +231,10 @@ fn sample_pixels(img: &RgbImage, max_samples: usize) -> Vec<Oklch<f32>> {
 fn kmeans(points: &[Oklch<f32>], k: usize, iters: usize) -> Vec<Oklch<f32>> {
     if points.is_empty() || k == 0 { return vec![]; }
     let mut centroids = kmeans_init(points, k);
-
     for _ in 0..iters {
         let assignments: Vec<usize> = points.iter()
             .map(|p| nearest(p, &centroids))
             .collect();
-
         let mut sums = vec![[0.0f32; 3]; k];
         let mut counts = vec![0usize; k];
         for (p, &c) in points.iter().zip(&assignments) {
@@ -368,81 +279,12 @@ fn nearest(p: &Oklch<f32>, cs: &[Oklch<f32>]) -> usize {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PASS 3 — PIXEL TRANSFER
+// STEP 3 — PIXEL TRANSFER
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Blend a pixel using its segment weights.
-///
-/// For each segment (bg, edge, subject):
-///   1. Find the best-matching cluster→target mapping for this pixel
-///      within that segment's pool (inverse-distance weighted)
-///   2. Weight the result by the segment's membership for this pixel
-///
-/// Lightness is ratio-preserved within each segment's transfer.
-/// Final blend is in cartesian (a,b) Oklab space — no hue wrap artifacts.
-fn blend_segments(
-    orig: Oklch<f32>,
-    w_bg: f32,
-    w_edge: f32,
-    w_subj: f32,
-    bg_mappings: &[(Oklch<f32>, Oklch<f32>)],
-    subj_mappings: &[(Oklch<f32>, Oklch<f32>)],
-    edge_color: Oklch<f32>,
-) -> Rgb<u8> {
-    let total_seg = w_bg + w_edge + w_subj;
-    if total_seg < EPSILON {
-        return oklch_to_rgb(&edge_color);
-    }
-
-    let mut out_l = 0.0f32;
-    let mut out_a = 0.0f32;
-    let mut out_b = 0.0f32;
-
-    // Background contribution
-    if w_bg > 1e-3 {
-        let (tl, ta, tb) = transfer_from_mappings(orig, bg_mappings);
-        let wb = w_bg / total_seg;
-        out_l += wb * tl;
-        out_a += wb * ta;
-        out_b += wb * tb;
-    }
-
-    // Edge contribution (fixed color, lightness ratio-preserved)
-    if w_edge > 1e-3 {
-        let we = w_edge / total_seg;
-        let l_ratio = if orig.l > 0.01 { (orig.l / edge_color.l.max(0.01)).clamp(0.5, 2.0) } else { 1.0 };
-        let mapped_l = (edge_color.l * l_ratio).clamp(0.0, 1.0);
-        let (ta, tb) = hue_to_ab(edge_color.chroma, edge_color.hue);
-        out_l += we * mapped_l;
-        out_a += we * ta;
-        out_b += we * tb;
-    }
-
-    // Subject contribution
-    if w_subj > 1e-3 {
-        let (tl, ta, tb) = transfer_from_mappings(orig, subj_mappings);
-        let ws = w_subj / total_seg;
-        out_l += ws * tl;
-        out_a += ws * ta;
-        out_b += ws * tb;
-    }
-
-    let final_l = out_l.clamp(0.0, 1.0);
-    let final_chroma = (out_a*out_a + out_b*out_b).sqrt().clamp(0.0, 0.5);
-    let final_hue = OklabHue::from_degrees(out_b.atan2(out_a).to_degrees());
-    oklch_to_rgb(&Oklch { l: final_l, chroma: final_chroma, hue: final_hue })
-}
-
-/// Inverse-power-distance weighted transfer within one segment's mappings.
-/// Returns (mapped_L, a, b) in Oklab cartesian space.
-fn transfer_from_mappings(
-    orig: Oklch<f32>,
-    mappings: &[(Oklch<f32>, Oklch<f32>)],
-) -> (f32, f32, f32) {
-    if mappings.is_empty() {
-        return (orig.l, 0.0, 0.0);
-    }
-
+/// Inverse-power-distance weighted transfer for subject pixels.
+/// Lightness ratio-preserved. Hue+chroma blended in cartesian (a,b) space.
+fn transfer_pixel(orig: Oklch<f32>, mappings: &[(Oklch<f32>, Oklch<f32>)]) -> Oklch<f32> {
     let mut total_w = 0.0f32;
     let mut out_l = 0.0f32;
     let mut out_a = 0.0f32;
@@ -460,7 +302,26 @@ fn transfer_from_mappings(
         total_w += w;
     }
 
-    (out_l / total_w, out_a / total_w, out_b / total_w)
+    let final_l = (out_l / total_w).clamp(0.0, 1.0);
+    let a = out_a / total_w;
+    let b = out_b / total_w;
+    Oklch {
+        l: final_l,
+        chroma: (a*a + b*b).sqrt().clamp(0.0, 0.5),
+        hue: OklabHue::from_degrees(b.atan2(a).to_degrees()),
+    }
+}
+
+/// Blend two Oklch colors in cartesian (a,b) space. t=0 → a, t=1 → b.
+fn blend_oklch(a: Oklch<f32>, b: Oklch<f32>, t: f32) -> Oklch<f32> {
+    let (aa, ab) = hue_to_ab(a.chroma, a.hue);
+    let (ba, bb) = hue_to_ab(b.chroma, b.hue);
+    let l = a.l + (b.l - a.l) * t;
+    let ra = aa + (ba - aa) * t;
+    let rb = ab + (bb - ab) * t;
+    let chroma = (ra*ra + rb*rb).sqrt().clamp(0.0, 0.5);
+    let hue = OklabHue::from_degrees(rb.atan2(ra).to_degrees());
+    Oklch { l, chroma, hue }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -522,61 +383,49 @@ mod tests {
     #[test]
     fn test_recolor_runs() {
         let mut img = RgbImage::new(64, 64);
-        for p in img.pixels_mut() { *p = Rgb([128, 64, 192]); }
+        for p in img.pixels_mut() { *p = Rgb([100, 100, 150]); }
         assert_eq!(recolor_wallpaper(&img, &test_theme()).dimensions(), (64, 64));
     }
 
     #[test]
-    fn test_dark_corner_stays_dark() {
-        // A dark near-black corner pixel must not map to a bright or
-        // highly-chromatic color regardless of the theme.
-        let mut img = RgbImage::new(128, 128);
-        // Dark corners, bright center
-        for y in 0..128u32 {
-            for x in 0..128u32 {
-                let cx = (x as i32 - 64).abs();
-                let cy = (y as i32 - 64).abs();
-                let v = (255 - (cx + cy).min(120) * 2) as u8;
-                img.put_pixel(x, y, Rgb([v/8, v/8, v/8]));
-            }
-        }
+    fn test_corner_maps_to_bg_colors() {
+        // Dark corner pixels must map to surface/surface_variant,
+        // never to a bright chromatic accent color.
+        let mut img = RgbImage::new(256, 256);
+        for y in 0..256u32 { for x in 0..256u32 {
+            // Dark everywhere, bright center
+            let cx = (x as i32 - 128).abs() as u32;
+            let cy = (y as i32 - 128).abs() as u32;
+            let d = ((cx*cx + cy*cy) as f32).sqrt();
+            let v = (200.0 - d.min(200.0)) as u8;
+            img.put_pixel(x, y, Rgb([v/6, v/6, v/4]));
+        }}
         let result = recolor_wallpaper(&img, &test_theme());
-        // Corner pixel should still be dark
+        // Corner (0,0) should be dark and low-chroma
         let corner = rgb_to_oklch(result.get_pixel(0, 0));
-        assert!(corner.l < 0.35, "corner should stay dark, got L={}", corner.l);
+        assert!(corner.l < 0.4, "corner should be dark, got L={}", corner.l);
+        assert!(corner.chroma < 0.15, "corner should be low-chroma, got chroma={}", corner.chroma);
     }
 
     #[test]
-    fn test_edge_map_fires_on_boundary() {
-        let w = 64u32; let h = 64u32;
-        let mut img = RgbImage::new(w, h);
-        for y in 0..h { for x in 0..w {
-            img.put_pixel(x, y, Rgb([if x < w/2 { 0 } else { 255 }, 0, 0]));
+    fn test_center_gets_subject_treatment() {
+        // Center pixel of a high-contrast image should have higher saliency
+        // and thus more subject influence
+        let mut img = RgbImage::new(128, 128);
+        for y in 0..128u32 { for x in 0..128u32 {
+            let cx = (x as i32 - 64).abs() as u32;
+            let cy = (y as i32 - 64).abs() as u32;
+            let d = ((cx*cx + cy*cy) as f32).sqrt();
+            let v = (255.0 - d.min(255.0)) as u8;
+            img.put_pixel(x, y, Rgb([v, v/2, v]));
         }}
         let l = compute_lightness_map(&img);
-        let e = compute_edge_map(&l, w, h);
-        // Boundary column should have high edge value
-        let boundary_edge = e[(32*w+31) as usize];
-        assert!(boundary_edge > 0.3, "boundary should have high edge, got {}", boundary_edge);
-    }
-
-    #[test]
-    fn test_bg_pool_excludes_bright_accent() {
-        // Background pool must only contain dark/achromatic colors
-        let theme = test_theme();
-        let pool = background_pool(&theme);
-        for c in &pool {
-            assert!(c.l < 0.6, "bg pool color should be dark, got L={}", c.l);
-        }
-    }
-
-    #[test]
-    fn test_subject_pool_contains_chromatic() {
-        // Subject pool should contain the primary (most chromatic) color
-        let theme = test_theme();
-        let pool = subject_pool(&theme);
-        let max_chroma = pool.iter().map(|c| c.chroma).fold(0.0f32, f32::max);
-        assert!(max_chroma > 0.05, "subject pool should have chromatic colors");
+        let s = compute_saliency_map(&l, 128, 128);
+        let sm = box_blur(&s, 128, 128, BLUR_RADIUS);
+        let center_sw = smoothstep(SALIENCY_BG_MAX, SALIENCY_FG_MIN, sm[64*128+64]);
+        let corner_sw = smoothstep(SALIENCY_BG_MAX, SALIENCY_FG_MIN, sm[0]);
+        assert!(center_sw > corner_sw,
+            "center subject weight ({}) should exceed corner ({})", center_sw, corner_sw);
     }
 
     #[test]
@@ -590,16 +439,22 @@ mod tests {
         let left  = rgb_to_oklch(result.get_pixel(5, 0));
         let right = rgb_to_oklch(result.get_pixel(122, 0));
         assert!(left.l < right.l + 0.1,
-            "gradient should stay directional: L_left={} L_right={}", left.l, right.l);
+            "gradient should stay directional: L={} → L={}", left.l, right.l);
     }
 
     #[test]
-    fn test_center_more_salient_than_corner() {
-        let w = 128u32; let h = 128u32;
-        let img = RgbImage::from_pixel(w, h, Rgb([128u8, 128, 128]));
-        let l = compute_lightness_map(&img);
-        let s = compute_saliency_map(&l, w, h);
-        assert!(s[(h/2*w+w/2) as usize] > s[0],
-            "center should be more salient than corner");
+    fn test_blend_oklch_midpoint() {
+        let a = Oklch { l: 0.2, chroma: 0.0, hue: OklabHue::from_degrees(0.0) };
+        let b = Oklch { l: 0.8, chroma: 0.0, hue: OklabHue::from_degrees(0.0) };
+        let mid = blend_oklch(a, b, 0.5);
+        assert!((mid.l - 0.5).abs() < 0.01, "midpoint blend L should be 0.5, got {}", mid.l);
+    }
+
+    #[test]
+    fn test_kmeans_count() {
+        let samples: Vec<Oklch<f32>> = (0..200)
+            .map(|i| Oklch { l: i as f32/200.0, chroma: 0.1, hue: OklabHue::from_degrees(120.0) })
+            .collect();
+        assert_eq!(kmeans(&samples, K, KMEANS_ITER).len(), K);
     }
 }
