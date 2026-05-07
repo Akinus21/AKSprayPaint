@@ -1,5 +1,6 @@
 use image::{Rgb, RgbImage};
 use palette::{FromColor, IntoColor, Oklch, OklabHue, Srgb};
+use quantette::{Image, Palette, PaletteSize, Pipeline, QuantizeMethod};
 
 use akspraypaint::NoctaliaTheme;
 
@@ -126,14 +127,11 @@ fn build_anchor_mappings(source: &MatugenTheme, target: &NoctaliaTheme) -> Vec<(
     ]
 }
 
-/// K-means fallback: find dominant colors in image and map to theme slots
+/// Quantette fallback: extract dominant colors using quantette's k-means and map to theme slots
 fn fallback_mappings(input: &RgbImage, theme: &NoctaliaTheme) -> Vec<(Oklch<f32>, Oklch<f32>)> {
-    const K: usize = 7;
-    const MAX_SAMPLES: usize = 40_000;
-    const KMEANS_ITERS: usize = 12;
+    const NUM_COLORS: usize = 7;
 
-    let samples = sample_pixels(input, MAX_SAMPLES);
-    let clusters = kmeans(&samples, K, KMEANS_ITERS);
+    let clusters = extract_quantette_palette(input, NUM_COLORS);
 
     if clusters.is_empty() {
         return build_identity_mappings(theme);
@@ -144,10 +142,8 @@ fn fallback_mappings(input: &RgbImage, theme: &NoctaliaTheme) -> Vec<(Oklch<f32>
         .map(|c| rgb_to_oklch(&Rgb(c)))
         .collect();
 
-    // Map each cluster to nearest theme slot by hue (for chromatic) or lightness (for achromatic)
     clusters.iter().map(|&cluster| {
         let target = if cluster.chroma < 0.06 {
-            // Achromatic: match by lightness
             theme_colors.iter()
                 .min_by(|a, b| {
                     let da = (a.l - cluster.l).abs();
@@ -157,7 +153,6 @@ fn fallback_mappings(input: &RgbImage, theme: &NoctaliaTheme) -> Vec<(Oklch<f32>
                 .copied()
                 .unwrap_or(cluster)
         } else {
-            // Chromatic: match by hue distance
             theme_colors.iter()
                 .min_by(|a, b| {
                     let da = hue_dist(cluster.hue, a.hue);
@@ -181,66 +176,21 @@ fn build_identity_mappings(theme: &NoctaliaTheme) -> Vec<(Oklch<f32>, Oklch<f32>
         .collect()
 }
 
-fn sample_pixels(img: &RgbImage, max_samples: usize) -> Vec<Oklch<f32>> {
-    let (w, h) = img.dimensions();
-    let total = (w as usize) * (h as usize);
-    let stride = (total / max_samples).max(1);
-    img.pixels()
-        .enumerate()
-        .filter(|(i, _)| i % stride == 0)
-        .map(|(_, p)| rgb_to_oklch(p))
-        .collect()
-}
+fn extract_quantette_palette(input: &RgbImage, num_colors: usize) -> Vec<Oklch<f32>> {
+    let (width, height) = input.dimensions();
+    let raw_pixels: Vec<[u8; 3]> = input.pixels().map(|p| [p[0], p[1], p[2]]).collect();
 
-fn kmeans(points: &[Oklch<f32>], k: usize, iters: usize) -> Vec<Oklch<f32>> {
-    if points.is_empty() || k == 0 {
-        return vec![];
-    }
+    let img = Image::from_slice(&raw_pixels, width, height).expect("valid image dimensions");
+    let palette_size = PaletteSize::from_u32(num_colors as u32).expect("valid palette size");
 
-    // Initialize centroids using k-means++ style spread
-    let mut centroids = vec![points[points.len() / 4]];
-    for _ in 1..k {
-        let dists: Vec<f32> = points.iter()
-            .map(|p| centroids.iter().map(|c| oklch_dist(p, c)).fold(f32::MAX, f32::min))
-            .collect();
-        let next = dists.iter().enumerate()
-            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
-            .map(|(i, _)| i)
-            .unwrap_or(0);
-        centroids.push(points[next]);
-    }
+    let palette = Pipeline::new()
+        .with_method(QuantizeMethod::Kmeans)
+        .quantize(&img, palette_size);
 
-    for _ in 0..iters {
-        // Assign points to nearest centroid
-        let assignments: Vec<usize> = points.iter()
-            .map(|p| centroids.iter().enumerate()
-                .min_by(|(_, a), (_, b)| oklch_dist(p, a).partial_cmp(&oklch_dist(p, b)).unwrap())
-                .map(|(i, _)| i)
-                .unwrap_or(0))
-            .collect();
-
-        // Update centroids
-        let mut sums = vec![[0.0f32; 3]; k];
-        let mut counts = vec![0usize; k];
-        for (p, &ci) in points.iter().zip(&assignments) {
-            let (a, b) = hue_to_ab(p.chroma, p.hue);
-            sums[ci][0] += p.l;
-            sums[ci][1] += a;
-            sums[ci][2] += b;
-            counts[ci] += 1;
-        }
-        for i in 0..k {
-            if counts[i] == 0 { continue; }
-            let n = counts[i] as f32;
-            let (l, a, b) = (sums[i][0] / n, sums[i][1] / n, sums[i][2] / n);
-            centroids[i] = Oklch {
-                l,
-                chroma: (a * a + b * b).sqrt().clamp(0.0, 0.5),
-                hue: OklabHue::from_degrees(b.atan2(a).to_degrees()),
-            };
-        }
-    }
-    centroids
+    palette.colors().iter().map(|rgb| {
+        let s = Srgb::new(rgb.red as f32 / 255.0, rgb.green as f32 / 255.0, rgb.blue as f32 / 255.0);
+        Oklch::from_color(s.into_linear())
+    }).collect()
 }
 
 const SATURATION_BOOST: f32 = 1.5;
