@@ -13,7 +13,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Recolor the current wallpaper to match the noctalia theme (one-shot)
-    Run,
+    Run {
+        /// Path to wallpaper (auto-detect if not provided)
+        #[arg(long)]
+        wallpaper: Option<String>,
+    },
     /// Watch for noctalia theme changes and automatically recolor
     Watch,
     /// Recolor a specific image and set it as wallpaper
@@ -31,7 +35,7 @@ fn main() {
     let cli = Cli::parse();
 
     let result = match cli.command {
-        Command::Run => commands::run::run(),
+        Command::Run { wallpaper } => commands::run::run(wallpaper.as_deref()),
         Command::Watch => commands::watch::watch(),
         Command::Set { path } => commands::set::set(&path),
         Command::Status => commands::set::status(),

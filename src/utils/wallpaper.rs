@@ -2,15 +2,104 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub fn detect_wallpaper() -> Option<PathBuf> {
-    if let Some(path) = try_swaybg() {
+    if let Some(path) = try_swww() {
         return Some(path);
     }
-    if let Some(path) = try_swww() {
+    if let Some(path) = try_hyprpaper() {
+        return Some(path);
+    }
+    if let Some(path) = try_swaybg() {
         return Some(path);
     }
     if let Some(path) = try_gsettings() {
         return Some(path);
     }
+    if let Some(path) = try_noctalia_cache() {
+        return Some(path);
+    }
+    None
+}
+
+fn try_hyprpaper() -> Option<PathBuf> {
+    let output = Command::new("hyprctl")
+        .args(["hyprpaper", "listactive"])
+        .output()
+        .ok()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        if line.contains(", ") {
+            let parts: Vec<&str> = line.split(", ").collect();
+            if parts.len() >= 2 {
+                let path = PathBuf::from(parts[1].trim());
+                if path.is_file() {
+                    return Some(path);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn try_noctalia_cache() -> Option<PathBuf> {
+    // Try XDG config directory for noctalia config files
+    if let Some(config_dir) = dirs::config_dir() {
+        // Check for wallpaper path in noctalia config
+        let noctalia_config = config_dir.join("noctalia").join("config.toml");
+        if let Ok(content) = std::fs::read_to_string(&noctalia_config) {
+            for line in content.lines() {
+                if line.starts_with("wallpaper") {
+                    if let Some(eq_pos) = line.find('=') {
+                        let path_str = line[eq_pos + 1..].trim().trim_matches('"').trim_matches('\'');
+                        let path = PathBuf::from(path_str);
+                        if path.is_file() {
+                            return Some(path);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // Try XDG data directories
+    if let Some(data_dir) = dirs::data_dir() {
+        let paths = [
+            data_dir.join("noctalia").join("wallpaper"),
+            data_dir.join("noctalia-shell").join("wallpaper"),
+            data_dir.join("niri").join("wallpaper"),
+        ];
+        for path in paths {
+            if path.is_file() {
+                return Some(path);
+            }
+        }
+    }
+    
+    // Try common noctalia cache locations
+    if let Some(cache_dir) = dirs::cache_dir() {
+        let paths = [
+            cache_dir.join("noctalia").join("wallpaper"),
+            cache_dir.join("noctalia-shell").join("current_wallpaper"),
+        ];
+        for path in paths {
+            if path.is_file() {
+                return Some(path);
+            }
+        }
+    }
+    
+    // Try XDG state directory
+    if let Some(state_dir) = dirs::state_dir() {
+        let paths = [
+            state_dir.join("noctalia").join("wallpaper"),
+            state_dir.join("noctalia-shell").join("wallpaper"),
+        ];
+        for path in paths {
+            if path.is_file() {
+                return Some(path);
+            }
+        }
+    }
+    
     None
 }
 

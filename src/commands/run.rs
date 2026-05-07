@@ -1,9 +1,14 @@
 use crate::utils::{cache, recolor, theme, wallpaper};
+use std::path::Path;
 
-pub fn run() -> Result<(), String> {
-    let wp_path = wallpaper::detect_wallpaper()
-        .ok_or_else(|| "could not detect current wallpaper".to_string())?;
-    eprintln!("Detected wallpaper: {}", wp_path.display());
+pub fn run(wp_override: Option<&str>) -> Result<(), String> {
+    let wp_path = if let Some(path) = wp_override {
+        Path::new(path).to_path_buf()
+    } else {
+        wallpaper::detect_wallpaper()
+            .ok_or_else(|| "could not detect current wallpaper".to_string())?
+    };
+    eprintln!("Wallpaper: {}", wp_path.display());
 
     let (_, theme_content) = theme::read_theme()?;
     let hash = theme::theme_hash(&theme_content);
