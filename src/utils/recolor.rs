@@ -9,10 +9,9 @@ const EPSILON: f32 = 1e-6;
 /// Recolor `input` so its colors match the noctalia `theme`.
 ///
 /// Algorithm:
-/// 1. Run `matugen image <wallpaper> --json hex` to extract a theme palette from the wallpaper
-/// 2. Read the target theme from `~/.config/noctalia/colors.json`
-/// 3. Build anchor pairs by slot name (source.slot → target.slot for all 7 slots)
-/// 4. Apply anchor-based inverse-distance transfer for each pixel
+/// 1. Try matugen to extract theme from wallpaper
+/// 2. If matugen fails, use k-means to find dominant colors and map to theme slots
+/// 3. Apply anchor-based inverse-distance transfer
 pub fn recolor_wallpaper(input: &RgbImage, theme: &NoctaliaTheme) -> RgbImage {
     let mappings = match extract_wallpaper_theme(input) {
         Ok(source) => {
@@ -20,8 +19,8 @@ pub fn recolor_wallpaper(input: &RgbImage, theme: &NoctaliaTheme) -> RgbImage {
             build_anchor_mappings(&source, theme)
         }
         Err(e) => {
-            eprintln!("Matugen failed ({}), using fallback", e);
-            fallback_mappings(theme)
+            eprintln!("Matugen failed ({}), using k-means fallback", e);
+            fallback_mappings(input, theme)
         }
     };
 
@@ -36,10 +35,8 @@ pub fn recolor_wallpaper(input: &RgbImage, theme: &NoctaliaTheme) -> RgbImage {
     output
 }
 
-/// Call `matugen image <path> --json hex` to extract theme from the wallpaper.
+/// Extract theme from wallpaper using matugen
 fn extract_wallpaper_theme(input: &RgbImage) -> Result<MatugenTheme, String> {
-    let (w, h) = input.dimensions();
-
     let mut buf = std::io::Cursor::new(Vec::new());
     input.write_to(&mut buf, image::ImageFormat::Png)
         .map_err(|e| format!("failed to encode image: {}", e))?;
@@ -68,7 +65,7 @@ fn extract_wallpaper_theme(input: &RgbImage) -> Result<MatugenTheme, String> {
 }
 
 #[derive(Debug)]
-struct MatugenTheme {
+pub struct MatugenTheme {
     pub primary: [u8; 3],
     pub on_primary: [u8; 3],
     pub surface: [u8; 3],
@@ -129,13 +126,121 @@ fn build_anchor_mappings(source: &MatugenTheme, target: &NoctaliaTheme) -> Vec<(
     ]
 }
 
-fn fallback_mappings(theme: &NoctaliaTheme) -> Vec<(Oklch<f32>, Oklch<f32>)> {
-    let palette = theme.palette();
-    palette.iter().map(|c| {
-        let src = rgb_to_oklch(&Rgb(*c));
-        let tgt = src;
-        (src, tgt)
+/// K-means fallback: find dominant colors in image and map to theme slots
+fn fallback_mappings(input: &RgbImage, theme: &NoctaliaTheme) -> Vec<(Oklch<f32>, Oklch<f32>)> {
+    const K: usize = 7;
+    const MAX_SAMPLES: usize = 40_000;
+    const KMEANS_ITERS: usize = 12;
+
+    let samples = sample_pixels(input, MAX_SAMPLES);
+    let clusters = kmeans(&samples, K, KMEANS_ITERS);
+
+    if clusters.is_empty() {
+        return build_identity_mappings(theme);
+    }
+
+    let theme_colors: Vec<Oklch<f32>> = theme.palette()
+        .into_iter()
+        .map(|c| rgb_to_oklch(&Rgb(c)))
+        .collect();
+
+    // Map each cluster to nearest theme slot by hue (for chromatic) or lightness (for achromatic)
+    clusters.iter().map(|&cluster| {
+        let target = if cluster.chroma < 0.06 {
+            // Achromatic: match by lightness
+            theme_colors.iter()
+                .min_by(|a, b| {
+                    let da = (a.l - cluster.l).abs();
+                    let db = (b.l - cluster.l).abs();
+                    da.partial_cmp(&db).unwrap()
+                })
+                .copied()
+                .unwrap_or(cluster)
+        } else {
+            // Chromatic: match by hue distance
+            theme_colors.iter()
+                .min_by(|a, b| {
+                    let da = hue_dist(cluster.hue, a.hue);
+                    let db = hue_dist(cluster.hue, b.hue);
+                    da.partial_cmp(&db).unwrap()
+                })
+                .copied()
+                .unwrap_or(cluster)
+        };
+        (cluster, target)
     }).collect()
+}
+
+fn build_identity_mappings(theme: &NoctaliaTheme) -> Vec<(Oklch<f32>, Oklch<f32>)> {
+    theme.palette()
+        .into_iter()
+        .map(|c| {
+            let oklch = rgb_to_oklch(&Rgb(c));
+            (oklch, oklch)
+        })
+        .collect()
+}
+
+fn sample_pixels(img: &RgbImage, max_samples: usize) -> Vec<Oklch<f32>> {
+    let (w, h) = img.dimensions();
+    let total = (w as usize) * (h as usize);
+    let stride = (total / max_samples).max(1);
+    img.pixels()
+        .enumerate()
+        .filter(|(i, _)| i % stride == 0)
+        .map(|(_, p)| rgb_to_oklch(p))
+        .collect()
+}
+
+fn kmeans(points: &[Oklch<f32>], k: usize, iters: usize) -> Vec<Oklch<f32>> {
+    if points.is_empty() || k == 0 {
+        return vec![];
+    }
+
+    // Initialize centroids using k-means++ style spread
+    let mut centroids = vec![points[points.len() / 4]];
+    for _ in 1..k {
+        let dists: Vec<f32> = points.iter()
+            .map(|p| centroids.iter().map(|c| oklch_dist(p, c)).fold(f32::MAX, f32::min))
+            .collect();
+        let next = dists.iter().enumerate()
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        centroids.push(points[next]);
+    }
+
+    for _ in 0..iters {
+        // Assign points to nearest centroid
+        let assignments: Vec<usize> = points.iter()
+            .map(|p| centroids.iter().enumerate()
+                .min_by(|(_, a), (_, b)| oklch_dist(p, a).partial_cmp(&oklch_dist(p, b)).unwrap())
+                .map(|(i, _)| i)
+                .unwrap_or(0))
+            .collect();
+
+        // Update centroids
+        let mut sums = vec![[0.0f32; 3]; k];
+        let mut counts = vec![0usize; k];
+        for (p, &ci) in points.iter().zip(&assignments) {
+            let (a, b) = hue_to_ab(p.chroma, p.hue);
+            sums[ci][0] += p.l;
+            sums[ci][1] += a;
+            sums[ci][2] += b;
+            counts[ci] += 1;
+        }
+        for i in 0..k {
+            if counts[i] == 0 { continue; }
+            let n = counts[i] as f32;
+            let (l, a, b) = (sums[i][0] / n, sums[i][1] / n, sums[i][2] / n);
+            centroids[i] = Oklch {
+                l,
+                chroma: (a * a + b * b).sqrt().clamp(0.0, 0.5),
+                hue: OklabHue::from_degrees(b.atan2(a).to_degrees()),
+            };
+        }
+    }
+    centroids
 }
 
 fn transfer_pixel(orig: Oklch<f32>, mappings: &[(Oklch<f32>, Oklch<f32>)]) -> Rgb<u8> {
@@ -148,6 +253,7 @@ fn transfer_pixel(orig: Oklch<f32>, mappings: &[(Oklch<f32>, Oklch<f32>)]) -> Rg
         let dist = oklch_dist(&orig, src).max(EPSILON);
         let w = 1.0 / dist.powf(SHARPNESS);
 
+        // Preserve lightness ratio from source to target
         let l_ratio = if src.l > 0.01 {
             (orig.l / src.l).clamp(0.5, 2.0)
         } else {
@@ -176,6 +282,11 @@ fn transfer_pixel(orig: Oklch<f32>, mappings: &[(Oklch<f32>, Oklch<f32>)]) -> Rg
 fn hue_to_ab(chroma: f32, hue: OklabHue<f32>) -> (f32, f32) {
     let r = hue.into_radians();
     (chroma * r.cos(), chroma * r.sin())
+}
+
+fn hue_dist(a: OklabHue<f32>, b: OklabHue<f32>) -> f32 {
+    let diff = (a.into_degrees() - b.into_degrees()).abs() % 360.0;
+    if diff > 180.0 { 360.0 - diff } else { diff }
 }
 
 fn oklch_dist(a: &Oklch<f32>, b: &Oklch<f32>) -> f32 {
