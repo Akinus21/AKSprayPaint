@@ -1,6 +1,6 @@
 use image::{Rgb, RgbImage};
 use palette::{FromColor, IntoColor, Oklch, OklabHue, Srgb};
-use quantette::{Image, Palette, PaletteSize, Pipeline, QuantizeMethod};
+use quantette::{Image, PaletteSize, Pipeline};
 
 use akspraypaint::NoctaliaTheme;
 
@@ -180,12 +180,10 @@ fn extract_quantette_palette(input: &RgbImage, num_colors: usize) -> Vec<Oklch<f
     let (width, height) = input.dimensions();
     let raw_pixels: Vec<[u8; 3]> = input.pixels().map(|p| [p[0], p[1], p[2]]).collect();
 
-    let img = Image::from_slice(&raw_pixels, width, height).expect("valid image dimensions");
-    let palette_size = PaletteSize::from_u32(num_colors as u32).expect("valid palette size");
+    let img = Image::new(width, height, raw_pixels).expect("valid image dimensions");
+    let palette_size = PaletteSize::from(num_colors as u16).expect("valid palette size");
 
-    let palette = Pipeline::new()
-        .with_method(QuantizeMethod::Kmeans)
-        .quantize(&img, palette_size);
+    let palette = Pipeline::new().quantize(&img, palette_size);
 
     palette.colors().iter().map(|rgb| {
         let s = Srgb::new(rgb.red as f32 / 255.0, rgb.green as f32 / 255.0, rgb.blue as f32 / 255.0);
