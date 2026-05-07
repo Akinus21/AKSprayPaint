@@ -1,6 +1,5 @@
 use image::{Rgb, RgbImage};
-use palette::{FromColor, Oklch, Srgb};
-use palette::hue::Hue;
+use palette::{FromColor, Oklch, OklchHue, Srgb};
 
 pub fn recolor_wallpaper(
     input: &RgbImage,
@@ -90,17 +89,17 @@ pub fn recolor_wallpaper(
 }
 
 fn rgb_to_oklch(p: &Rgb<u8>) -> Oklch<f32> {
-    let linear: Srgb<f32> = Srgb::new(
+    let rgb = Srgb::new(
         p[0] as f32 / 255.0,
         p[1] as f32 / 255.0,
         p[2] as f32 / 255.0,
-    )
-    .into_linear();
+    );
+    let linear = rgb.into_linear();
     Oklch::from_color(linear)
 }
 
 fn oklch_to_rgb(c: &Oklch<f32>) -> Rgb<u8> {
-    let linear: Srgb<f32> = Srgb::from_color(*c);
+    let linear = Srgb::from_color(*c);
     let encoded = linear.into_encoding();
     Rgb([
         (encoded.red * 255.0).round().clamp(0.0, 255.0) as u8,
@@ -167,11 +166,11 @@ fn kmeans_luminance(
             if counts[j] > 0 {
                 let nf = counts[j] as f32;
                 let avg_hue = sums[j].2 / nf;
-                means[j] = Oklch {
-                    l: (sums[j].0 / nf).clamp(0.0, 1.0),
-                    chroma: (sums[j].1 / nf).clamp(0.0, 0.5),
-                    hue: Hue::from_degrees(avg_hue),
-                };
+                means[j] = Oklch::new(
+                    (sums[j].0 / nf).clamp(0.0, 1.0),
+                    (sums[j].1 / nf).clamp(0.0, 0.5),
+                    OklchHue::from_degrees(avg_hue),
+                );
             }
         }
     }
