@@ -76,7 +76,10 @@ fn parse_matugen_json(json: &str) -> Result<MatugenTheme, String> {
     fn get_hex(obj: &serde_json::Map<String, serde_json::Value>, key: &str) -> Result<[u8; 3], String> {
         let hex = obj.get(key)
             .and_then(|v| v.as_str())
-            .ok_or_else(|| format!("missing key: {}", key))?;
+            .ok_or_else(|| {
+                let available: Vec<_> = obj.keys().collect();
+                format!("missing key: {} — available keys: {:?}", key, available)
+            })?;
         parse_hex(hex)
     }
 
