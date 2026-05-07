@@ -20,6 +20,9 @@ brew install Akinus21/tap/akspraypaint
 # Recolor the current wallpaper (one-shot)
 akspraypaint run
 
+# Recolor with a specific wallpaper path
+akspraypaint run --wallpaper ~/Pictures/wallpaper.png
+
 # Watch for noctalia theme changes and automatically recolor
 akspraypaint watch
 
@@ -32,6 +35,8 @@ akspraypaint status
 # Clear cached recolored images
 akspraypaint clean
 ```
+
+**Note:** Wallpaper auto-detection supports swww, hyprpaper, swaybg, GNOME, and Noctalia Shell. If detection fails, use `--wallpaper` to specify the path manually.
 
 ## How It Works
 
