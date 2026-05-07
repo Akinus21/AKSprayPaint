@@ -1,0 +1,16 @@
+[package]
+name = "akspraypaint"
+version = "0.1.0"
+edition = "2021"
+description = "Recolors the current wallpaper to match the noctalia theme"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "bmp"] }
+palette = { version = "0.7", features = ["std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+inotify = "0.11"
+dirs = "6"
+sha2 = "0.10"
+hex = "0.4"
