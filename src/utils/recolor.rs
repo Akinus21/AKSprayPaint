@@ -130,45 +130,37 @@ fn parse_hex(hex: &str) -> Result<[u8; 3], String> {
 }
 
 fn build_anchor_mappings(source: &MatugenTheme, target: &NoctaliaTheme) -> Vec<(Oklch<f32>, Oklch<f32>)> {
-    let source_colors = vec![
-        ("primary", rgb_to_oklch(&Rgb(source.primary))),
-        ("on_primary", rgb_to_oklch(&Rgb(source.on_primary))),
-        ("surface", rgb_to_oklch(&Rgb(source.surface))),
-        ("on_surface", rgb_to_oklch(&Rgb(source.on_surface))),
-        ("surface_variant", rgb_to_oklch(&Rgb(source.surface_variant))),
-        ("on_surface_variant", rgb_to_oklch(&Rgb(source.on_surface_variant))),
-        ("error", rgb_to_oklch(&Rgb(source.error))),
+    let source_colors: Vec<(Oklch<f32>, Oklch<f32>)> = vec![
+        rgb_to_oklch(&Rgb(source.primary)),
+        rgb_to_oklch(&Rgb(source.on_primary)),
+        rgb_to_oklch(&Rgb(source.surface)),
+        rgb_to_oklch(&Rgb(source.on_surface)),
+        rgb_to_oklch(&Rgb(source.surface_variant)),
+        rgb_to_oklch(&Rgb(source.on_surface_variant)),
+        rgb_to_oklch(&Rgb(source.error)),
     ];
 
-    let target_colors = vec![
-        ("primary", rgb_to_oklch(&Rgb(target.primary))),
-        ("on_primary", rgb_to_oklch(&Rgb(target.on_primary))),
-        ("surface", rgb_to_oklch(&Rgb(target.surface))),
-        ("on_surface", rgb_to_oklch(&Rgb(target.on_surface))),
-        ("surface_variant", rgb_to_oklch(&Rgb(target.surface_variant))),
-        ("on_surface_variant", rgb_to_oklch(&Rgb(target.on_surface_variant))),
-        ("error", rgb_to_oklch(&Rgb(target.error))),
+    let target_colors: Vec<Oklch<f32>> = vec![
+        rgb_to_oklch(&Rgb(target.primary)),
+        rgb_to_oklch(&Rgb(target.on_primary)),
+        rgb_to_oklch(&Rgb(target.surface)),
+        rgb_to_oklch(&Rgb(target.on_surface)),
+        rgb_to_oklch(&Rgb(target.surface_variant)),
+        rgb_to_oklch(&Rgb(target.on_surface_variant)),
+        rgb_to_oklch(&Rgb(target.error)),
     ];
 
-    eprintln!("DEBUG matugen source colors:");
-    for (name, c) in &source_colors {
-        eprintln!("  {}: l={:.2} chroma={:.2} hue={:.0}", name, c.l, c.chroma, c.hue.into_degrees());
-    }
-
-    eprintln!("DEBUG noctalia target colors:");
-    for (name, c) in &target_colors {
-        eprintln!("  {}: l={:.2} chroma={:.2} hue={:.0}", name, c.l, c.chroma, c.hue.into_degrees());
-    }
-
-    vec![
-        (rgb_to_oklch(&Rgb(source.primary)), rgb_to_oklch(&Rgb(target.primary))),
-        (rgb_to_oklch(&Rgb(source.on_primary)), rgb_to_oklch(&Rgb(target.on_primary))),
-        (rgb_to_oklch(&Rgb(source.surface)), rgb_to_oklch(&Rgb(target.surface))),
-        (rgb_to_oklch(&Rgb(source.on_surface)), rgb_to_oklch(&Rgb(target.on_surface))),
-        (rgb_to_oklch(&Rgb(source.surface_variant)), rgb_to_oklch(&Rgb(target.surface_variant))),
-        (rgb_to_oklch(&Rgb(source.on_surface_variant)), rgb_to_oklch(&Rgb(target.on_surface_variant))),
-        (rgb_to_oklch(&Rgb(source.error)), rgb_to_oklch(&Rgb(target.error))),
-    ]
+    source_colors.into_iter().map(|src| {
+        let best_target = target_colors.iter()
+            .min_by(|a, b| {
+                let da = hue_dist(src.hue, *a);
+                let db = hue_dist(src.hue, *b);
+                da.partial_cmp(&db).unwrap()
+            })
+            .copied()
+            .unwrap();
+        (src, best_target)
+    }).collect()
 }
 
 fn fallback_mappings(input: &RgbImage, theme: &NoctaliaTheme) -> Vec<(Oklch<f32>, Oklch<f32>)> {
@@ -247,16 +239,6 @@ fn transfer_pixel(orig: Oklch<f32>, mappings: &[(Oklch<f32>, Oklch<f32>)]) -> Rg
     let mut out_l = 0.0f32;
     let mut out_a = 0.0f32;
     let mut out_b = 0.0f32;
-
-    if orig.l > 0.95 || orig.l < 0.05 {
-        if orig.chroma > 0.15 {
-            eprintln!("DEBUG transfer_pixel: orig l={:.2} chroma={:.2} hue={:.0}", orig.l, orig.chroma, orig.hue.into_degrees());
-            for (i, (src, tgt)) in mappings.iter().enumerate() {
-                let dist = oklch_dist(&orig, src);
-                eprintln!("  mapping[{}]: src l={:.2} chroma={:.2} hue={:.0} -> tgt l={:.2} chroma={:.2} hue={:.0}, dist={:.3}", i, src.l, src.chroma, src.hue.into_degrees(), tgt.l, tgt.chroma, tgt.hue.into_degrees(), dist);
-            }
-        }
-    }
 
     for (src, tgt) in mappings {
         let dist = oklch_dist(&orig, src).max(EPSILON);
