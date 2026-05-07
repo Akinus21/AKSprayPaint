@@ -13,6 +13,11 @@ const MAX_SAMPLES: usize = 40_000;
 const SHARPNESS: f32 = 8.0;
 const EPSILON: f32 = 1e-6;
 
+/// How much to weight lightness vs chroma+hue in the matching cost.
+/// 0.5 = equal weight. Higher = lightness dominates matching.
+const L_WEIGHT: f32 = 0.6;
+const CH_WEIGHT: f32 = 0.4;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // PUBLIC API
 // ─────────────────────────────────────────────────────────────────────────────
@@ -26,26 +31,19 @@ const EPSILON: f32 = 1e-6;
 /// ## Stage 1 — Cluster
 /// K-means in Oklch space finds K dominant colors in the source image.
 ///
-/// ## Stage 2 — Match by chroma rank, then hue
-/// This is the key insight: **lightness is never used for matching**.
+/// ## Stage 2 — Hungarian optimal matching
+/// Build a K×N cost matrix where cost[i][j] is a weighted distance between
+/// cluster i and theme color j, combining:
+///   - Lightness distance (L axis): preserves dark→dark, light→light
+///   - Chroma+hue distance (a,b axes): preserves colour family
 ///
-/// Sort both clusters and theme colors by chroma (low → high).
-/// Pair them by chroma rank: the least-chromatic cluster maps to the
-/// least-chromatic theme color, the most-chromatic to the most-chromatic.
+/// Run the Hungarian algorithm to find the globally optimal one-to-one
+/// assignment that minimises total cost. This is the key fix over all
+/// previous approaches: no thresholds, no axis prioritization, no
+/// heuristics — just the mathematically optimal pairing.
 ///
-/// Within each chroma rank position, if there are ties or ambiguity, hue
-/// is used to break them — the cluster whose hue is closest to a theme
-/// color's hue wins that slot.
-///
-/// Why chroma-first?
-///   - The dark background (chroma ≈ 0.00) and the lime green accent
-///     (chroma ≈ 0.22) are maximally separated in chroma space.
-///     They can never compete for the same theme slot.
-///   - Lightness is unreliable for matching: a dark purple and a dark
-///     background both have low L, but one is chromatic and one is not.
-///   - Chroma is the correct axis: it directly encodes "how colourful is
-///     this region" which is exactly what determines which theme slot it
-///     belongs in.
+/// When K > palette size, extra clusters are assigned to the nearest
+/// already-assigned theme color (many-to-one allowed after optimal pairing).
 ///
 /// ## Stage 3 — Transfer
 /// Inverse-power-distance weighted blend. Lightness ratio-preserved.
@@ -59,101 +57,230 @@ pub fn recolor_wallpaper(input: &RgbImage, theme: &NoctaliaTheme) -> RgbImage {
         .map(rgb_arr_to_oklch)
         .collect();
 
-    let mappings = match_by_chroma_then_hue(&clusters, &theme_colors);
+    let mappings = hungarian_match(&clusters, &theme_colors);
 
     let (width, height) = input.dimensions();
     let mut output = RgbImage::new(width, height);
-
     for (x, y, pixel) in input.enumerate_pixels() {
         let orig = rgb_to_oklch(pixel);
         output.put_pixel(x, y, transfer_pixel(orig, &mappings));
     }
-
     output
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// STAGE 2 — MATCH BY CHROMA RANK THEN HUE
+// STAGE 2 — HUNGARIAN OPTIMAL MATCHING
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Match source clusters to theme colors using chroma as the primary axis
-/// and hue as a tiebreaker.
+/// Weighted matching cost between a source cluster and a theme color.
 ///
-/// The matching works in two passes:
+/// Combines lightness distance and chroma+hue (a,b) distance with separate
+/// weights so both axes contribute. This prevents:
+///   - Dark background matching to near-white (L distance too high)
+///   - Dark background matching to lime green (CH distance too high — green
+///     has high chroma, background has near-zero chroma)
+///   - Yellow moon matching to purple owl slot (hue distance too high)
+fn matching_cost(src: &Oklch<f32>, tgt: &Oklch<f32>) -> f32 {
+    let l_dist = (src.l - tgt.l).abs();
+    let (sa, sb) = hue_to_ab(src.chroma, src.hue);
+    let (ta, tb) = hue_to_ab(tgt.chroma, tgt.hue);
+    let ch_dist = ((sa - ta).powi(2) + (sb - tb).powi(2)).sqrt();
+    L_WEIGHT * l_dist + CH_WEIGHT * ch_dist
+}
+
+/// Run the Hungarian algorithm to find the optimal one-to-one assignment
+/// of clusters to theme colors, minimizing total weighted matching cost.
 ///
-/// **Pass 1 — Chroma bucketing**
-/// Divide the chroma range [0, max_chroma] into equal buckets, one per
-/// theme color (sorted by chroma). Each cluster is assigned to the bucket
-/// matching its chroma rank. This guarantees near-zero-chroma clusters
-/// (backgrounds) never compete with high-chroma clusters (accents) for
-/// the same theme slot.
+/// Implementation: Munkres / Hungarian algorithm on an n×m cost matrix
+/// where n = clusters.len(), m = theme_colors.len().
+/// We pad to square if needed, solve, then discard dummy assignments.
 ///
-/// **Pass 2 — Hue refinement within bucket**
-/// When multiple clusters land in the same chroma bucket, assign each to
-/// the theme color in that bucket whose hue is closest. This handles the
-/// case where e.g. both the owl and a mid-tone outline land in the "medium
-/// chroma" bucket — they get sorted to their nearest hue within that group.
-fn match_by_chroma_then_hue(
+/// After optimal matching, any clusters that didn't get a unique theme slot
+/// (when K > palette size) are assigned to the nearest theme color by cost.
+fn hungarian_match(
     clusters: &[Oklch<f32>],
     theme_colors: &[Oklch<f32>],
 ) -> Vec<(Oklch<f32>, Oklch<f32>)> {
-    // Sort both by chroma ascending
-    let mut sorted_clusters = clusters.to_vec();
-    let mut sorted_theme = theme_colors.to_vec();
-    sorted_clusters.sort_by(|a, b| a.chroma.partial_cmp(&b.chroma).unwrap());
-    sorted_theme.sort_by(|a, b| a.chroma.partial_cmp(&b.chroma).unwrap());
+    let nc = clusters.len();
+    let nt = theme_colors.len();
+    let n = nc.max(nt); // square dimension for the algorithm
 
-    let nc = sorted_clusters.len();
-    let nt = sorted_theme.len();
+    // Build cost matrix, padded with zeros for dummy rows/cols
+    let mut cost = vec![vec![0.0f32; n]; n];
+    for i in 0..nc {
+        for j in 0..nt {
+            cost[i][j] = matching_cost(&clusters[i], &theme_colors[j]);
+        }
+    }
 
-    // For each cluster, find its chroma-rank position in the theme palette.
-    // Use fractional indexing so clusters spread evenly across theme slots
-    // even when K ≠ palette length.
-    let mut mappings: Vec<(Oklch<f32>, Oklch<f32>)> = Vec::with_capacity(nc);
+    // Run Hungarian algorithm → assignment[i] = j means cluster i → theme j
+    let assignment = munkres(&cost, n);
 
-    for (ci, &src) in sorted_clusters.iter().enumerate() {
-        // Map cluster index → theme index by chroma rank
-        let base_ti = if nc == 1 {
-            nt / 2
+    // Build mappings. For clusters mapped to dummy cols (j >= nt), fall back
+    // to nearest-cost theme color.
+    let mut mappings = Vec::with_capacity(nc);
+    for i in 0..nc {
+        let j = assignment[i];
+        let theme_color = if j < nt {
+            theme_colors[j]
         } else {
-            (ci * (nt - 1)) / (nc - 1)
-        };
-        let base_ti = base_ti.min(nt - 1);
-
-        // Among the theme colors at adjacent chroma ranks (base_ti ± 1),
-        // pick the one whose hue is closest to src.hue.
-        // This is the hue refinement step — it prevents yellow and blue-purple
-        // from collapsing to the same slot when they share a chroma rank.
-        let lo = base_ti.saturating_sub(1);
-        let hi = (base_ti + 1).min(nt - 1);
-
-        let best_theme = sorted_theme[lo..=hi]
-            .iter()
-            .min_by(|a, b| {
-                // For achromatic sources (chroma ≈ 0), hue is meaningless —
-                // just pick the closest chroma (i.e. stay at base_ti).
-                // For chromatic sources, use hue distance.
-                if src.chroma < 0.05 {
-                    a.chroma.partial_cmp(&b.chroma).unwrap()
-                } else {
-                    hue_dist(src.hue, a.hue)
-                        .partial_cmp(&hue_dist(src.hue, b.hue))
+            // Dummy assignment — find nearest real theme color by cost
+            *theme_colors
+                .iter()
+                .min_by(|a, b| {
+                    matching_cost(&clusters[i], a)
+                        .partial_cmp(&matching_cost(&clusters[i], b))
                         .unwrap()
-                }
-            })
-            .copied()
-            .unwrap_or(sorted_theme[base_ti]);
-
-        mappings.push((src, best_theme));
+                })
+                .unwrap()
+        };
+        mappings.push((clusters[i], theme_color));
     }
 
     mappings
 }
 
-/// Circular hue distance in degrees. Result ∈ [0, 180].
-fn hue_dist(a: OklabHue<f32>, b: OklabHue<f32>) -> f32 {
-    let diff = (a.into_degrees() - b.into_degrees()).abs() % 360.0;
-    if diff > 180.0 { 360.0 - diff } else { diff }
+/// Munkres (Hungarian) algorithm on an n×n cost matrix.
+/// Returns assignment[i] = j such that total cost is minimized.
+///
+/// Classic O(n³) implementation:
+/// 1. Row reduction: subtract row minimum from each row
+/// 2. Col reduction: subtract col minimum from each col
+/// 3. Cover zeros with minimum lines; if n lines needed → done
+/// 4. Otherwise find minimum uncovered value, subtract from uncovered,
+///    add to doubly-covered, repeat from step 3
+fn munkres(cost: &[Vec<f32>], n: usize) -> Vec<usize> {
+    let mut matrix: Vec<Vec<f32>> = cost.to_vec();
+
+    // Step 1: row reduction
+    for row in matrix.iter_mut() {
+        let min = row.iter().cloned().fold(f32::MAX, f32::min);
+        for v in row.iter_mut() { *v -= min; }
+    }
+
+    // Step 2: col reduction
+    for j in 0..n {
+        let min = (0..n).map(|i| matrix[i][j]).fold(f32::MAX, f32::min);
+        for i in 0..n { matrix[i][j] -= min; }
+    }
+
+    let mut row_covered = vec![false; n];
+    let mut col_covered = vec![false; n];
+    // starred[i][j] = true if (i,j) is a starred zero
+    let mut starred = vec![vec![false; n]; n];
+    // primed[i][j] = true if (i,j) is a primed zero
+    let mut primed = vec![vec![false; n]; n];
+
+    // Step 3: star zeros
+    for i in 0..n {
+        for j in 0..n {
+            if matrix[i][j].abs() < 1e-9 && !row_covered[i] && !col_covered[j] {
+                starred[i][j] = true;
+                row_covered[i] = true;
+                col_covered[j] = true;
+            }
+        }
+    }
+    row_covered = vec![false; n];
+    col_covered = vec![false; n];
+
+    loop {
+        // Cover columns with starred zeros
+        for j in 0..n {
+            if (0..n).any(|i| starred[i][j]) {
+                col_covered[j] = true;
+            }
+        }
+
+        // If all cols covered → we have a complete assignment
+        if col_covered.iter().filter(|&&c| c).count() == n {
+            break;
+        }
+
+        // Find an uncovered zero and prime it
+        'outer: loop {
+            let mut found_zero = None;
+            'find: for i in 0..n {
+                for j in 0..n {
+                    if matrix[i][j].abs() < 1e-9 && !row_covered[i] && !col_covered[j] {
+                        found_zero = Some((i, j));
+                        break 'find;
+                    }
+                }
+            }
+
+            match found_zero {
+                None => {
+                    // No uncovered zero — adjust matrix
+                    let min_uncovered = (0..n)
+                        .flat_map(|i| (0..n).map(move |j| (i, j)))
+                        .filter(|&(i, j)| !row_covered[i] && !col_covered[j])
+                        .map(|(i, j)| matrix[i][j])
+                        .fold(f32::MAX, f32::min);
+
+                    for i in 0..n {
+                        for j in 0..n {
+                            if row_covered[i] { matrix[i][j] += min_uncovered; }
+                            if !col_covered[j] { matrix[i][j] -= min_uncovered; }
+                        }
+                    }
+                    // (continue loop to find uncovered zero again)
+                }
+                Some((pi, pj)) => {
+                    primed[pi][pj] = true;
+
+                    // Is there a starred zero in this row?
+                    let star_col = (0..n).find(|&j| starred[pi][j]);
+                    match star_col {
+                        Some(sj) => {
+                            // Cover this row, uncover the starred column
+                            row_covered[pi] = true;
+                            col_covered[sj] = false;
+                            // continue looking for uncovered zeros
+                        }
+                        None => {
+                            // Augment path starting at (pi, pj)
+                            let mut path = vec![(pi, pj)];
+                            loop {
+                                let (_, last_j) = *path.last().unwrap();
+                                // Find starred zero in this column
+                                let star_row = (0..n).find(|&i| starred[i][last_j]);
+                                match star_row {
+                                    None => break,
+                                    Some(sr) => {
+                                        path.push((sr, last_j));
+                                        // Find primed zero in this row
+                                        let prime_col = (0..n).find(|&j| primed[sr][j]).unwrap();
+                                        path.push((sr, prime_col));
+                                    }
+                                }
+                            }
+                            // Flip stars along path
+                            for &(i, j) in &path {
+                                starred[i][j] = !starred[i][j];
+                            }
+                            // Clear primes and covers
+                            primed = vec![vec![false; n]; n];
+                            row_covered = vec![false; n];
+                            col_covered = vec![false; n];
+                            break 'outer;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Extract assignment from starred zeros
+    let mut assignment = vec![0usize; n];
+    for i in 0..n {
+        for j in 0..n {
+            if starred[i][j] {
+                assignment[i] = j;
+            }
+        }
+    }
+    assignment
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -209,7 +336,6 @@ fn kmeans(points: &[Oklch<f32>], k: usize, iters: usize) -> Vec<Oklch<f32>> {
 fn kmeans_plus_plus_init(points: &[Oklch<f32>], k: usize) -> Vec<Oklch<f32>> {
     let mut centroids = Vec::with_capacity(k);
     centroids.push(points[points.len() / 4]);
-
     for _ in 1..k {
         let distances: Vec<f32> = points
             .iter()
@@ -239,8 +365,6 @@ fn nearest_centroid(p: &Oklch<f32>, centroids: &[Oklch<f32>]) -> usize {
 // STAGE 3 — PER-PIXEL TRANSFER
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Inverse-power-distance weighted blend across all cluster→target mappings.
-/// Lightness is ratio-preserved; hue+chroma blended in cartesian (a,b) space.
 fn transfer_pixel(orig: Oklch<f32>, mappings: &[(Oklch<f32>, Oklch<f32>)]) -> Rgb<u8> {
     let mut total_w = 0.0f32;
     let mut out_l   = 0.0f32;
@@ -250,11 +374,9 @@ fn transfer_pixel(orig: Oklch<f32>, mappings: &[(Oklch<f32>, Oklch<f32>)]) -> Rg
     for (src, tgt) in mappings {
         let dist = oklch_distance(&orig, src).max(EPSILON);
         let w = 1.0 / dist.powf(SHARPNESS);
-
         let l_ratio = if src.l > 0.01 { (orig.l / src.l).clamp(0.5, 2.0) } else { 1.0 };
         let mapped_l = (tgt.l * l_ratio).clamp(0.0, 1.0);
         let (ta, tb) = hue_to_ab(tgt.chroma, tgt.hue);
-
         out_l += w * mapped_l;
         out_a += w * ta;
         out_b += w * tb;
@@ -266,7 +388,6 @@ fn transfer_pixel(orig: Oklch<f32>, mappings: &[(Oklch<f32>, Oklch<f32>)]) -> Rg
     let b = out_b / total_w;
     let final_chroma = (a * a + b * b).sqrt().clamp(0.0, 0.5);
     let final_hue = OklabHue::from_degrees(b.atan2(a).to_degrees());
-
     oklch_to_rgb(&Oklch { l: final_l, chroma: final_chroma, hue: final_hue })
 }
 
@@ -363,36 +484,45 @@ mod tests {
     }
 
     #[test]
-    fn test_achromatic_cluster_never_maps_to_high_chroma_theme() {
-        // A near-grey cluster (chroma ≈ 0) must map to a low-chroma theme slot,
-        // never to the vivid green accent.
-        let near_grey  = Oklch { l: 0.10, chroma: 0.01, hue: OklabHue::from_degrees(0.0) };
-        let vivid_green = Oklch { l: 0.78, chroma: 0.22, hue: OklabHue::from_degrees(135.0) };
-        let theme = vec![
-            Oklch { l: 0.10, chroma: 0.01, hue: OklabHue::from_degrees(290.0) }, // dark bg
-            Oklch { l: 0.25, chroma: 0.03, hue: OklabHue::from_degrees(290.0) }, // dark surface
-            Oklch { l: 0.40, chroma: 0.08, hue: OklabHue::from_degrees(290.0) }, // mid purple
-            Oklch { l: 0.55, chroma: 0.17, hue: OklabHue::from_degrees(290.0) }, // purple
-            Oklch { l: 0.78, chroma: 0.22, hue: OklabHue::from_degrees(135.0) }, // green
-            Oklch { l: 0.85, chroma: 0.05, hue: OklabHue::from_degrees(290.0) }, // light
-            Oklch { l: 0.92, chroma: 0.02, hue: OklabHue::from_degrees(290.0) }, // near-white
-        ];
-        let mappings = match_by_chroma_then_hue(&[near_grey, vivid_green], &theme);
-        let (_, grey_target) = mappings.iter()
-            .find(|(s, _)| s.chroma < 0.05).unwrap();
-        assert!(
-            grey_target.chroma < 0.10,
-            "achromatic cluster must not map to high-chroma theme color, got chroma={}",
-            grey_target.chroma
-        );
+    fn test_munkres_identity() {
+        // On a diagonal cost matrix, Hungarian should assign i→i
+        let n = 4;
+        let mut cost = vec![vec![1.0f32; n]; n];
+        for i in 0..n { cost[i][i] = 0.0; }
+        let assignment = munkres(&cost, n);
+        for i in 0..n {
+            assert_eq!(assignment[i], i, "identity matrix: cluster {} should map to theme {}", i, i);
+        }
     }
 
     #[test]
-    fn test_yellow_and_purple_map_to_different_hues() {
+    fn test_dark_bg_maps_to_dark_theme() {
+        // Dark background cluster must map to dark theme color, not bright green
+        let dark_bg    = Oklch { l: 0.08, chroma: 0.01, hue: OklabHue::from_degrees(280.0) };
+        let lime_green = Oklch { l: 0.80, chroma: 0.22, hue: OklabHue::from_degrees(135.0) };
+        let theme = vec![
+            Oklch { l: 0.08, chroma: 0.02, hue: OklabHue::from_degrees(280.0) }, // dark bg
+            Oklch { l: 0.25, chroma: 0.05, hue: OklabHue::from_degrees(280.0) }, // dark surface
+            Oklch { l: 0.45, chroma: 0.10, hue: OklabHue::from_degrees(280.0) }, // mid purple
+            Oklch { l: 0.60, chroma: 0.18, hue: OklabHue::from_degrees(280.0) }, // purple
+            Oklch { l: 0.80, chroma: 0.22, hue: OklabHue::from_degrees(135.0) }, // green
+            Oklch { l: 0.88, chroma: 0.04, hue: OklabHue::from_degrees(280.0) }, // light
+            Oklch { l: 0.95, chroma: 0.01, hue: OklabHue::from_degrees(280.0) }, // near-white
+        ];
+        let mappings = hungarian_match(&[dark_bg, lime_green], &theme);
+        let (_, bg_target) = mappings.iter().find(|(s, _)| s.l < 0.15).unwrap();
+        assert!(bg_target.l < 0.4,
+            "dark background should map to a dark theme color, got L={}", bg_target.l);
+        assert!(bg_target.chroma < 0.10,
+            "dark background should map to low-chroma theme color, got chroma={}", bg_target.chroma);
+    }
+
+    #[test]
+    fn test_yellow_and_purple_separate() {
         let yellow = Oklch { l: 0.88, chroma: 0.18, hue: OklabHue::from_degrees(100.0) };
         let purple = Oklch { l: 0.55, chroma: 0.15, hue: OklabHue::from_degrees(290.0) };
         let theme = vec![
-            Oklch { l: 0.12, chroma: 0.02, hue: OklabHue::from_degrees(290.0) },
+            Oklch { l: 0.10, chroma: 0.02, hue: OklabHue::from_degrees(290.0) },
             Oklch { l: 0.25, chroma: 0.02, hue: OklabHue::from_degrees(290.0) },
             Oklch { l: 0.55, chroma: 0.17, hue: OklabHue::from_degrees(290.0) },
             Oklch { l: 0.78, chroma: 0.22, hue: OklabHue::from_degrees(135.0) },
@@ -400,15 +530,14 @@ mod tests {
             Oklch { l: 0.92, chroma: 0.02, hue: OklabHue::from_degrees(290.0) },
             Oklch { l: 0.50, chroma: 0.20, hue: OklabHue::from_degrees(25.0)  },
         ];
-        let mappings = match_by_chroma_then_hue(&[yellow, purple], &theme);
-        let tgt_y = mappings.iter()
-            .find(|(s, _)| (s.hue.into_degrees() - 100.0).abs() < 5.0).unwrap().1;
-        let tgt_p = mappings.iter()
-            .find(|(s, _)| (s.hue.into_degrees() - 290.0).abs() < 5.0).unwrap().1;
-        assert!(
-            hue_dist(tgt_y.hue, tgt_p.hue) > 30.0,
-            "yellow and purple should hit different theme hues"
-        );
+        let mappings = hungarian_match(&[yellow, purple], &theme);
+        let tgt_y = mappings.iter().find(|(s, _)| (s.hue.into_degrees() - 100.0).abs() < 5.0).unwrap().1;
+        let tgt_p = mappings.iter().find(|(s, _)| (s.hue.into_degrees() - 290.0).abs() < 5.0).unwrap().1;
+        let gap = {
+            let diff = (tgt_y.hue.into_degrees() - tgt_p.hue.into_degrees()).abs() % 360.0;
+            if diff > 180.0 { 360.0 - diff } else { diff }
+        };
+        assert!(gap > 30.0, "yellow and purple should hit different theme hues, gap={}", gap);
     }
 
     #[test]
