@@ -182,7 +182,7 @@ fn extract_quantette_palette(input: &RgbImage, num_colors: usize) -> Vec<Oklch<f
         .expect("valid slice input")
         .output_srgb8_palette();
 
-    palette.colors().iter().map(|rgb| {
+    palette.into_iter().map(|rgb| {
         let s = palette::Srgb::new(rgb.red as f32 / 255.0, rgb.green as f32 / 255.0, rgb.blue as f32 / 255.0);
         Oklch::from_color(s.into_linear())
     }).collect()
