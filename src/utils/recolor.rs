@@ -130,69 +130,15 @@ fn parse_hex(hex: &str) -> Result<[u8; 3], String> {
 }
 
 fn build_anchor_mappings(source: &MatugenTheme, target: &NoctaliaTheme) -> Vec<(Oklch<f32>, Oklch<f32>)> {
-    let source_colors: Vec<Oklch<f32>> = vec![
-        rgb_to_oklch(&Rgb(source.primary)),
-        rgb_to_oklch(&Rgb(source.on_primary)),
-        rgb_to_oklch(&Rgb(source.surface)),
-        rgb_to_oklch(&Rgb(source.on_surface)),
-        rgb_to_oklch(&Rgb(source.surface_variant)),
-        rgb_to_oklch(&Rgb(source.on_surface_variant)),
-        rgb_to_oklch(&Rgb(source.error)),
-    ];
-
-    let target_colors: Vec<Oklch<f32>> = vec![
-        rgb_to_oklch(&Rgb(target.primary)),
-        rgb_to_oklch(&Rgb(target.on_primary)),
-        rgb_to_oklch(&Rgb(target.surface)),
-        rgb_to_oklch(&Rgb(target.on_surface)),
-        rgb_to_oklch(&Rgb(target.surface_variant)),
-        rgb_to_oklch(&Rgb(target.on_surface_variant)),
-        rgb_to_oklch(&Rgb(target.error)),
-    ];
-
-    eprintln!("HUE-BASED MAPPING:");
-    for (i, src) in source_colors.iter().enumerate() {
-        let best_idx = target_colors.iter()
-            .enumerate()
-            .min_by(|(_, a), (_, b)| {
-                let da = hue_dist(src.hue, a.hue);
-                let db = hue_dist(src.hue, b.hue);
-                da.partial_cmp(&db).unwrap()
-            })
-            .map(|(i, _)| i)
-            .unwrap();
-        eprintln!("  src[{}]: hue={:.0} chroma={:.2} l={:.2} -> tgt[{}]: hue={:.0} chroma={:.2} l={:.2}",
-            i, src.hue.into_degrees(), src.chroma, src.l,
-            best_idx,
-            target_colors[best_idx].hue.into_degrees(),
-            target_colors[best_idx].chroma,
-            target_colors[best_idx].l);
-    }
-
-    source_colors.into_iter().map(|src| {
-        let best_target = target_colors.iter()
-            .min_by(|a, b| {
-                let da = hue_dist(src.hue, a.hue);
-                let db = hue_dist(src.hue, b.hue);
-                da.partial_cmp(&db).unwrap()
-            })
-            .copied()
-            .unwrap();
-        (src, best_target)
-    }).collect()
-}
-
-    source_colors.into_iter().map(|src| {
-        let best_target = target_colors.iter()
-            .min_by(|a, b| {
-                let da = hue_dist(src.hue, a.hue);
-                let db = hue_dist(src.hue, b.hue);
-                da.partial_cmp(&db).unwrap()
-            })
-            .copied()
-            .unwrap();
-        (src, best_target)
-    }).collect()
+    vec![
+        (rgb_to_oklch(&Rgb(source.primary)), rgb_to_oklch(&Rgb(target.primary))),
+        (rgb_to_oklch(&Rgb(source.on_primary)), rgb_to_oklch(&Rgb(target.on_primary))),
+        (rgb_to_oklch(&Rgb(source.surface)), rgb_to_oklch(&Rgb(target.surface))),
+        (rgb_to_oklch(&Rgb(source.on_surface)), rgb_to_oklch(&Rgb(target.on_surface))),
+        (rgb_to_oklch(&Rgb(source.surface_variant)), rgb_to_oklch(&Rgb(target.surface_variant))),
+        (rgb_to_oklch(&Rgb(source.on_surface_variant)), rgb_to_oklch(&Rgb(target.on_surface_variant))),
+        (rgb_to_oklch(&Rgb(source.error)), rgb_to_oklch(&Rgb(target.error))),
+    ]
 }
 
 fn fallback_mappings(input: &RgbImage, theme: &NoctaliaTheme) -> Vec<(Oklch<f32>, Oklch<f32>)> {
