@@ -3,39 +3,25 @@ use palette::{FromColor, IntoColor, Oklch, OklabHue, Srgb};
 
 use akspraypaint::NoctaliaTheme;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// CONSTANTS
-// ─────────────────────────────────────────────────────────────────────────────
-
 const SHARPNESS: f32 = 8.0;
 const EPSILON: f32 = 1e-6;
 
-/// Ollama endpoint. Override with AKSPRAYPAINT_OLLAMA_URL env var.
-const OLLAMA_DEFAULT_URL: &str = "https://ollama.akinus21.com";
-
-/// Vision model to use for color mapping.
-const OLLAMA_MODEL: &str = "kimi-k2.6:cloud";
-
-/// Timeout for the vision call in seconds.
-const VISION_TIMEOUT_SECS: u64 = 30;
-
-/// Max dimension to resize image to before sending to vision model.
-const VISION_MAX_DIM: u32 = 512;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// PUBLIC API
-// ─────────────────────────────────────────────────────────────────────────────
-
 /// Recolor `input` so its colors match the noctalia `theme`.
+///
+/// Algorithm:
+/// 1. Run `matugen image <wallpaper> --json hex` to extract a theme palette from the wallpaper
+/// 2. Read the target theme from `~/.config/noctalia/colors.json`
+/// 3. Build anchor pairs by slot name (source.slot → target.slot for all 7 slots)
+/// 4. Apply anchor-based inverse-distance transfer for each pixel
 pub fn recolor_wallpaper(input: &RgbImage, theme: &NoctaliaTheme) -> RgbImage {
-    let mappings = match vision_color_mappings(input, theme) {
-        Ok(m) if !m.is_empty() => {
-            eprintln!("Vision mapping: {} anchors from LLM", m.len());
-            m
+    let mappings = match extract_wallpaper_theme(input) {
+        Ok(source) => {
+            eprintln!("Using matugen extraction for color mapping");
+            build_anchor_mappings(&source, theme)
         }
-        Ok(_) | Err(_) => {
-            eprintln!("Falling back to hue-family");
-            fallback_mappings(input, theme)
+        Err(e) => {
+            eprintln!("Matugen failed ({}), using fallback", e);
+            fallback_mappings(theme)
         }
     };
 
@@ -50,293 +36,107 @@ pub fn recolor_wallpaper(input: &RgbImage, theme: &NoctaliaTheme) -> RgbImage {
     output
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// VISION MODEL COLOR MAPPING
-// ─────────────────────────────────────────────────────────────────────────────
-
-fn vision_color_mappings(
-    input: &RgbImage,
-    theme: &NoctaliaTheme,
-) -> Result<Vec<(Oklch<f32>, Oklch<f32>)>, String> {
-    let base64_img = encode_image_for_vision(input)?;
-    let theme_desc = theme_description(theme);
-    let prompt = build_prompt(&theme_desc);
-
-    let response = call_ollama(&base64_img, &prompt)?;
-    parse_mappings(&response, theme)
-}
-
-fn encode_image_for_vision(input: &RgbImage) -> Result<String, String> {
+/// Call `matugen image <path> --json hex` to extract theme from the wallpaper.
+fn extract_wallpaper_theme(input: &RgbImage) -> Result<MatugenTheme, String> {
     let (w, h) = input.dimensions();
-    let scale = (VISION_MAX_DIM as f32 / w.max(h) as f32).min(1.0);
-    let nw = (w as f32 * scale) as u32;
-    let nh = (h as f32 * scale) as u32;
-
-    let resized = image::imageops::resize(input, nw, nh, image::imageops::FilterType::Lanczos3);
 
     let mut buf = std::io::Cursor::new(Vec::new());
-    resized.write_to(&mut buf, image::ImageFormat::Png)
+    input.write_to(&mut buf, image::ImageFormat::Png)
         .map_err(|e| format!("failed to encode image: {}", e))?;
 
-    Ok(base64_encode(buf.get_ref()))
-}
+    let tmp_path = std::env::temp_dir().join("akspraypaint_wallpaper.png");
+    std::fs::write(&tmp_path, buf.get_ref())
+        .map_err(|e| format!("failed to write temp image: {}", e))?;
 
-fn theme_description(theme: &NoctaliaTheme) -> String {
-    format!(
-        "primary: {}\non_primary: {}\nsurface: {}\non_surface: {}\nsurface_variant: {}\non_surface_variant: {}\nerror: {}",
-        rgb_to_hex(theme.primary),
-        rgb_to_hex(theme.on_primary),
-        rgb_to_hex(theme.surface),
-        rgb_to_hex(theme.on_surface),
-        rgb_to_hex(theme.surface_variant),
-        rgb_to_hex(theme.on_surface_variant),
-        rgb_to_hex(theme.error),
-    )
-}
-
-fn rgb_to_hex(c: [u8; 3]) -> String {
-    format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2])
-}
-
-fn build_prompt(theme_desc: &str) -> String {
-    let prompt = format!(
-        "You are a color mapping assistant. I will show you a wallpaper image and a color theme palette.\n\
-         \n\
-         Your task:\n\
-         1. Identify the dominant color regions in the image (background, main subject, outlines, highlights)\n\
-         2. For each region, pick the most semantically appropriate theme slot\n\
-         \n\
-         Theme palette (slot_name: hex_color):\n\
-         {}\n\
-         \n\
-         Respond ONLY with a JSON array. No explanation, no markdown.\n\
-         Each element must have exactly these fields:\n\
-           source_hex: the hex color of the region in the original image (example: 1a1e3d)\n\
-           theme_slot: one of: primary, on_primary, surface, on_surface, surface_variant, on_surface_variant, error\n\
-         \n\
-         Example response format:\n\
-         [{{\"source_hex\": \"1a1a1f\", \"theme_slot\": \"surface\"}}, {{\"source_hex\": \"eff08a\", \"theme_slot\": \"on_surface_variant\"}}, {{\"source_hex\": \"8890d0\", \"theme_slot\": \"primary\"}}]\n\
-         \n\
-         Identify at least 4 and at most 8 color regions. Include the background, the main subject, outlines, and any highlights.",
-        theme_desc
-    );
-    prompt
-}
-
-fn call_ollama(base64_img: &str, prompt: &str) -> Result<String, String> {
-    let url = std::env::var("AKSPRAYPAINT_OLLAMA_URL")
-        .unwrap_or_else(|_| OLLAMA_DEFAULT_URL.to_string());
-    let endpoint = format!("{}/api/generate", url);
-
-    let body = format!(
-        "{{\"model\":\"{}\",\"prompt\":{},\"images\":[\"{}\"],\"stream\":false}}",
-        OLLAMA_MODEL,
-        serde_json::to_string(prompt).map_err(|e| e.to_string())?,
-        base64_img,
-    );
-
-    let output = std::process::Command::new("curl")
-        .args(["-s", "-X", "POST", "-H", "Content-Type: application/json",
-               "--max-time", &VISION_TIMEOUT_SECS.to_string(), "-d", &body, &endpoint])
+    let output = std::process::Command::new("matugen")
+        .args(["image", &tmp_path.to_string_lossy(), "--json", "hex"])
         .output()
-        .map_err(|e| format!("curl failed: {}", e))?;
+        .map_err(|e| format!("matugen failed to start: {}", e))?;
+
+    std::fs::remove_file(&tmp_path).ok();
 
     if !output.status.success() {
         return Err(format!(
-            "curl exited {}: {}",
+            "matugen exited {}: {}",
             output.status,
             String::from_utf8_lossy(&output.stderr)
         ));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    extract_ollama_response(&stdout)
+    parse_matugen_json(&stdout)
 }
 
-fn extract_ollama_response(raw: &str) -> Result<String, String> {
-    let key = "\"response\":\"";
-    let start = raw.find(key)
-        .ok_or_else(|| format!("no 'response' field in: {}", &raw[..raw.len().min(200)]))?
-        + key.len();
-
-    let rest = &raw[start..];
-    if !rest.starts_with('"') {
-        return Err(format!("response value is not a string: {}", &rest[..rest.len().min(100)]));
-    }
-
-    let chars: Vec<char> = rest.chars().collect();
-    let mut i = 1;
-    while i < chars.len() {
-        if chars[i] == '"' && chars[i-1] != '\\' {
-            return Ok(chars[1..i].iter().collect());
-        }
-        i += 1;
-    }
-    Err("could not find closing quote".to_string())
+#[derive(Debug)]
+struct MatugenTheme {
+    pub primary: [u8; 3],
+    pub on_primary: [u8; 3],
+    pub surface: [u8; 3],
+    pub on_surface: [u8; 3],
+    pub surface_variant: [u8; 3],
+    pub on_surface_variant: [u8; 3],
+    pub error: [u8; 3],
 }
 
-fn parse_mappings(
-    response: &str,
-    theme: &NoctaliaTheme,
-) -> Result<Vec<(Oklch<f32>, Oklch<f32>)>, String> {
-    let start = response.find('[')
-        .ok_or_else(|| format!("no JSON array found in response: {}", &response[..response.len().min(300)]))?;
-    let end = response.rfind(']')
-        .ok_or_else(|| "no closing ] found".to_string())?
-        + 1;
+fn parse_matugen_json(json: &str) -> Result<MatugenTheme, String> {
+    let value: serde_json::Value = serde_json::from_str(json)
+        .map_err(|e| format!("failed to parse matugen JSON: {} — raw: {}", e, &json[..json.len().min(500)]))?;
 
-    let json_str = &response[start..end];
-
-    let items: Vec<serde_json::Value> = serde_json::from_str(json_str)
-        .map_err(|e| format!("JSON parse error: {} — raw: {}", e, &json_str[..json_str.len().min(300)]))?;
-
-    let mut mappings = Vec::new();
-    for item in &items {
-        let source_hex = item["source_hex"].as_str()
-            .ok_or("missing source_hex")?;
-        let theme_slot = item["theme_slot"].as_str()
-            .ok_or("missing theme_slot")?;
-
-        let source = parse_hex_to_oklch(source_hex)
-            .ok_or_else(|| format!("invalid source_hex: {}", source_hex))?;
-        let target = slot_to_oklch(theme_slot, theme)
-            .ok_or_else(|| format!("unknown theme_slot: {}", theme_slot))?;
-
-        mappings.push((source, target));
+    fn get_hex(obj: &serde_json::Map<String, serde_json::Value>, key: &str) -> Result<[u8; 3], String> {
+        let hex = obj.get(key)
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| format!("missing key: {}", key))?;
+        parse_hex(hex)
     }
 
-    Ok(mappings)
+    let obj = value.as_object()
+        .ok_or_else(|| "matugen output is not an object".to_string())?;
+
+    Ok(MatugenTheme {
+        primary: get_hex(obj, "primary")?,
+        on_primary: get_hex(obj, "on_primary")?,
+        surface: get_hex(obj, "surface")?,
+        on_surface: get_hex(obj, "on_surface")?,
+        surface_variant: get_hex(obj, "surface_variant")?,
+        on_surface_variant: get_hex(obj, "on_surface_variant")?,
+        error: get_hex(obj, "error").unwrap_or([200, 50, 50]),
+    })
 }
 
-fn parse_hex_to_oklch(hex: &str) -> Option<Oklch<f32>> {
-    let hex = hex.trim();
-    let hex = hex.trim_start_matches('#');
+fn parse_hex(hex: &str) -> Result<[u8; 3], String> {
+    let hex = hex.trim().trim_start_matches('#');
     if hex.len() != 6 {
-        return None;
+        return Err(format!("invalid hex length: {}", hex));
     }
-    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
-    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
-    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
-    Some(rgb_arr_to_oklch([r, g, b]))
+    let r = u8::from_str_radix(&hex[0..2], 16)
+        .map_err(|_| format!("invalid hex: {}", hex))?;
+    let g = u8::from_str_radix(&hex[2..4], 16)
+        .map_err(|_| format!("invalid hex: {}", hex))?;
+    let b = u8::from_str_radix(&hex[4..6], 16)
+        .map_err(|_| format!("invalid hex: {}", hex))?;
+    Ok([r, g, b])
 }
 
-fn slot_to_oklch(slot: &str, theme: &NoctaliaTheme) -> Option<Oklch<f32>> {
-    match slot {
-        "primary" => Some(rgb_arr_to_oklch(theme.primary)),
-        "on_primary" => Some(rgb_arr_to_oklch(theme.on_primary)),
-        "surface" => Some(rgb_arr_to_oklch(theme.surface)),
-        "on_surface" => Some(rgb_arr_to_oklch(theme.on_surface)),
-        "surface_variant" => Some(rgb_arr_to_oklch(theme.surface_variant)),
-        "on_surface_variant" => Some(rgb_arr_to_oklch(theme.on_surface_variant)),
-        "error" => Some(rgb_arr_to_oklch(theme.error)),
-        _ => None,
-    }
+fn build_anchor_mappings(source: &MatugenTheme, target: &NoctaliaTheme) -> Vec<(Oklch<f32>, Oklch<f32>)> {
+    vec![
+        (rgb_to_oklch(&Rgb(source.primary)), rgb_to_oklch(&Rgb(target.primary))),
+        (rgb_to_oklch(&Rgb(source.on_primary)), rgb_to_oklch(&Rgb(target.on_primary))),
+        (rgb_to_oklch(&Rgb(source.surface)), rgb_to_oklch(&Rgb(target.surface))),
+        (rgb_to_oklch(&Rgb(source.on_surface)), rgb_to_oklch(&Rgb(target.on_surface))),
+        (rgb_to_oklch(&Rgb(source.surface_variant)), rgb_to_oklch(&Rgb(target.surface_variant))),
+        (rgb_to_oklch(&Rgb(source.on_surface_variant)), rgb_to_oklch(&Rgb(target.on_surface_variant))),
+        (rgb_to_oklch(&Rgb(source.error)), rgb_to_oklch(&Rgb(target.error))),
+    ]
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// FALLBACK — HUE-FAMILY MATCHING
-// ─────────────────────────────────────────────────────────────────────────────
-
-fn fallback_mappings(
-    input: &RgbImage,
-    theme: &NoctaliaTheme,
-) -> Vec<(Oklch<f32>, Oklch<f32>)> {
-    const K: usize = 7;
-    const KMEANS_ITER: usize = 12;
-    const MAX_SAMPLES: usize = 40_000;
-
-    let samples = sample_pixels(input, MAX_SAMPLES);
-    let clusters = kmeans(&samples, K, KMEANS_ITER);
-    let theme_colors: Vec<Oklch<f32>> = theme.palette()
-        .into_iter()
-        .map(rgb_arr_to_oklch)
-        .collect();
-    match_clusters_hue_family(&clusters, &theme_colors)
-}
-
-fn match_clusters_hue_family(
-    clusters: &[Oklch<f32>],
-    theme_colors: &[Oklch<f32>],
-) -> Vec<(Oklch<f32>, Oklch<f32>)> {
-    clusters.iter().map(|&src| {
-        let target = if src.chroma < 0.06 {
-            *theme_colors.iter()
-                .min_by(|a, b| {
-                    let da = (a.l - src.l).abs();
-                    let db = (b.l - src.l).abs();
-                    da.partial_cmp(&db).unwrap()
-                })
-                .unwrap()
-        } else {
-            *theme_colors.iter()
-                .min_by(|a, b| {
-                    let da = hue_dist(src.hue, a.hue);
-                    let db = hue_dist(src.hue, b.hue);
-                    da.partial_cmp(&db).unwrap()
-                })
-                .unwrap()
-        };
-        (src, target)
+fn fallback_mappings(theme: &NoctaliaTheme) -> Vec<(Oklch<f32>, Oklch<f32>)> {
+    let palette = theme.palette();
+    palette.iter().map(|c| {
+        let src = rgb_to_oklch(&Rgb(*c));
+        let tgt = src;
+        (src, tgt)
     }).collect()
 }
-
-fn sample_pixels(img: &RgbImage, max_samples: usize) -> Vec<Oklch<f32>> {
-    let (w, h) = img.dimensions();
-    let stride = ((w * h) as usize / max_samples).max(1);
-    img.pixels().enumerate()
-        .filter(|(i, _)| i % stride == 0)
-        .map(|(_, p)| rgb_to_oklch(p))
-        .collect()
-}
-
-fn kmeans(points: &[Oklch<f32>], k: usize, iters: usize) -> Vec<Oklch<f32>> {
-    if points.is_empty() || k == 0 {
-        return vec![];
-    }
-    let mut c = vec![points[points.len() / 4]];
-    for _ in 1..k {
-        let dists: Vec<f32> = points.iter()
-            .map(|p| c.iter().map(|q| oklch_dist(p, q)).fold(f32::MAX, f32::min))
-            .collect();
-        let next = dists.iter().enumerate()
-            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
-            .map(|(i, _)| i).unwrap_or(0);
-        c.push(points[next]);
-    }
-    for _ in 0..iters {
-        let assignments: Vec<usize> = points.iter()
-            .map(|p| c.iter().enumerate()
-                .min_by(|(_, a), (_, b)| oklch_dist(p, a).partial_cmp(&oklch_dist(p, b)).unwrap())
-                .map(|(i, _)| i).unwrap_or(0))
-            .collect();
-        let mut sums = vec![[0.0f32; 3]; k];
-        let mut counts = vec![0usize; k];
-        for (p, &ci) in points.iter().zip(&assignments) {
-            let (a, b) = hue_to_ab(p.chroma, p.hue);
-            sums[ci][0] += p.l;
-            sums[ci][1] += a;
-            sums[ci][2] += b;
-            counts[ci] += 1;
-        }
-        for i in 0..k {
-            if counts[i] == 0 {
-                continue;
-            }
-            let n = counts[i] as f32;
-            let (l, a, b) = (sums[i][0] / n, sums[i][1] / n, sums[i][2] / n);
-            c[i] = Oklch {
-                l,
-                chroma: (a * a + b * b).sqrt(),
-                hue: OklabHue::from_degrees(b.atan2(a).to_degrees()),
-            };
-        }
-    }
-    c
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// TRANSFER
-// ─────────────────────────────────────────────────────────────────────────────
 
 fn transfer_pixel(orig: Oklch<f32>, mappings: &[(Oklch<f32>, Oklch<f32>)]) -> Rgb<u8> {
     let mut total_w = 0.0f32;
@@ -347,12 +147,14 @@ fn transfer_pixel(orig: Oklch<f32>, mappings: &[(Oklch<f32>, Oklch<f32>)]) -> Rg
     for (src, tgt) in mappings {
         let dist = oklch_dist(&orig, src).max(EPSILON);
         let w = 1.0 / dist.powf(SHARPNESS);
+
         let l_ratio = if src.l > 0.01 {
             (orig.l / src.l).clamp(0.5, 2.0)
         } else {
             1.0
         };
         let mapped_l = (tgt.l * l_ratio).clamp(0.0, 1.0);
+
         let (ta, tb) = hue_to_ab(tgt.chroma, tgt.hue);
         out_l += w * mapped_l;
         out_a += w * ta;
@@ -363,6 +165,7 @@ fn transfer_pixel(orig: Oklch<f32>, mappings: &[(Oklch<f32>, Oklch<f32>)]) -> Rg
     let final_l = (out_l / total_w).clamp(0.0, 1.0);
     let a = out_a / total_w;
     let b = out_b / total_w;
+
     oklch_to_rgb(&Oklch {
         l: final_l,
         chroma: (a * a + b * b).sqrt().clamp(0.0, 0.5),
@@ -370,37 +173,9 @@ fn transfer_pixel(orig: Oklch<f32>, mappings: &[(Oklch<f32>, Oklch<f32>)]) -> Rg
     })
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// BASE64
-// ─────────────────────────────────────────────────────────────────────────────
-
-fn base64_encode(data: &[u8]) -> String {
-    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
-    for chunk in data.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
-        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
-        let n = (b0 << 16) | (b1 << 8) | b2;
-        out.push(CHARS[((n >> 18) & 63) as usize] as char);
-        out.push(CHARS[((n >> 12) & 63) as usize] as char);
-        out.push(if chunk.len() > 1 { CHARS[((n >> 6) & 63) as usize] as char } else { '=' });
-        out.push(if chunk.len() > 2 { CHARS[(n & 63) as usize] as char } else { '=' });
-    }
-    out
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// HELPERS
-// ─────────────────────────────────────────────────────────────────────────────
-
-fn hue_dist(a: OklabHue<f32>, b: OklabHue<f32>) -> f32 {
-    let diff = (a.into_degrees() - b.into_degrees()).abs() % 360.0;
-    if diff > 180.0 {
-        360.0 - diff
-    } else {
-        diff
-    }
+fn hue_to_ab(chroma: f32, hue: OklabHue<f32>) -> (f32, f32) {
+    let r = hue.into_radians();
+    (chroma * r.cos(), chroma * r.sin())
 }
 
 fn oklch_dist(a: &Oklch<f32>, b: &Oklch<f32>) -> f32 {
@@ -408,15 +183,6 @@ fn oklch_dist(a: &Oklch<f32>, b: &Oklch<f32>) -> f32 {
     let (ba, bb) = hue_to_ab(b.chroma, b.hue);
     let dl = a.l - b.l;
     ((dl * dl) + (aa - ba).powi(2) + (ab - bb).powi(2)).sqrt()
-}
-
-fn hue_to_ab(chroma: f32, hue: OklabHue<f32>) -> (f32, f32) {
-    let r = hue.into_radians();
-    (chroma * r.cos(), chroma * r.sin())
-}
-
-fn rgb_arr_to_oklch(arr: [u8; 3]) -> Oklch<f32> {
-    rgb_to_oklch(&Rgb(arr))
 }
 
 fn rgb_to_oklch(p: &Rgb<u8>) -> Oklch<f32> {
@@ -433,10 +199,6 @@ fn oklch_to_rgb(c: &Oklch<f32>) -> Rgb<u8> {
         (s.blue * 255.0).round().clamp(0.0, 255.0) as u8,
     ])
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// TESTS
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -455,52 +217,21 @@ mod tests {
     }
 
     #[test]
-    fn test_recolor_runs_fallback() {
-        let mut img = RgbImage::new(32, 32);
-        for p in img.pixels_mut() {
-            *p = Rgb([100, 64, 192]);
-        }
-        assert_eq!(recolor_wallpaper(&img, &test_theme()).dimensions(), (32, 32));
+    fn test_parse_hex() {
+        let c = parse_hex("ff0000").unwrap();
+        assert_eq!(c, [255, 0, 0]);
+        let c = parse_hex("#00ff00").unwrap();
+        assert_eq!(c, [0, 255, 0]);
     }
 
     #[test]
-    fn test_parse_mappings_valid() {
-        let theme = test_theme();
-        let response = r#"[
-            {"source_hex": "1a1a1f", "theme_slot": "surface"},
-            {"source_hex": "eff08a", "theme_slot": "on_surface_variant"},
-            {"source_hex": "8890d0", "theme_slot": "primary"}
-        ]"#;
-        let result = parse_mappings(response, &theme).unwrap();
-        assert_eq!(result.len(), 3);
-    }
-
-    #[test]
-    fn test_parse_hex_valid() {
-        let c = parse_hex_to_oklch("ff0000").unwrap();
-        assert!(c.chroma > 0.1, "red should have high chroma");
-    }
-
-    #[test]
-    fn test_slot_to_oklch_all_slots() {
-        let theme = test_theme();
-        for slot in &["primary", "on_primary", "surface", "on_surface",
-                      "surface_variant", "on_surface_variant", "error"] {
-            assert!(slot_to_oklch(slot, &theme).is_some(), "slot {} should resolve", slot);
-        }
-        assert!(slot_to_oklch("bogus", &theme).is_none());
-    }
-
-    #[test]
-    fn test_base64_roundtrip_known() {
-        assert_eq!(base64_encode(b"Man"), "TWFu");
-        assert_eq!(base64_encode(b"Ma"), "TWE=");
-        assert_eq!(base64_encode(b"M"), "TQ==");
-    }
-
-    #[test]
-    fn test_rgb_to_hex() {
-        assert_eq!(rgb_to_hex([255, 0, 128]), "#ff0080");
-        assert_eq!(rgb_to_hex([0, 0, 0]), "#000000");
+    fn test_rgb_oklch_roundtrip() {
+        let orig = Rgb([100, 150, 200]);
+        let oklch = rgb_to_oklch(&orig);
+        let back = oklch_to_rgb(&oklch);
+        let diff = (back[0] as i32 - orig[0] as i32).abs()
+            + (back[1] as i32 - orig[1] as i32).abs()
+            + (back[2] as i32 - orig[2] as i32).abs();
+        assert!(diff < 10, "roundtrip should be close, diff={}", diff);
     }
 }
