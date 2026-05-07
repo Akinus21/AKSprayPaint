@@ -150,6 +150,38 @@ fn build_anchor_mappings(source: &MatugenTheme, target: &NoctaliaTheme) -> Vec<(
         rgb_to_oklch(&Rgb(target.error)),
     ];
 
+    eprintln!("HUE-BASED MAPPING:");
+    for (i, src) in source_colors.iter().enumerate() {
+        let best_idx = target_colors.iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| {
+                let da = hue_dist(src.hue, a.hue);
+                let db = hue_dist(src.hue, b.hue);
+                da.partial_cmp(&db).unwrap()
+            })
+            .map(|(i, _)| i)
+            .unwrap();
+        eprintln!("  src[{}]: hue={:.0} chroma={:.2} l={:.2} -> tgt[{}]: hue={:.0} chroma={:.2} l={:.2}",
+            i, src.hue.into_degrees(), src.chroma, src.l,
+            best_idx,
+            target_colors[best_idx].hue.into_degrees(),
+            target_colors[best_idx].chroma,
+            target_colors[best_idx].l);
+    }
+
+    source_colors.into_iter().map(|src| {
+        let best_target = target_colors.iter()
+            .min_by(|a, b| {
+                let da = hue_dist(src.hue, a.hue);
+                let db = hue_dist(src.hue, b.hue);
+                da.partial_cmp(&db).unwrap()
+            })
+            .copied()
+            .unwrap();
+        (src, best_target)
+    }).collect()
+}
+
     source_colors.into_iter().map(|src| {
         let best_target = target_colors.iter()
             .min_by(|a, b| {
