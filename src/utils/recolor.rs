@@ -243,6 +243,9 @@ fn kmeans(points: &[Oklch<f32>], k: usize, iters: usize) -> Vec<Oklch<f32>> {
     centroids
 }
 
+const SATURATION_BOOST: f32 = 1.5;
+const MAX_CHROMA: f32 = 0.4;
+
 fn transfer_pixel(orig: Oklch<f32>, mappings: &[(Oklch<f32>, Oklch<f32>)]) -> Rgb<u8> {
     let mut total_w = 0.0f32;
     let mut out_l = 0.0f32;
@@ -261,7 +264,9 @@ fn transfer_pixel(orig: Oklch<f32>, mappings: &[(Oklch<f32>, Oklch<f32>)]) -> Rg
         };
         let mapped_l = (tgt.l * l_ratio).clamp(0.0, 1.0);
 
-        let (ta, tb) = hue_to_ab(tgt.chroma, tgt.hue);
+        // Boost saturation by amplifying target chroma
+        let boosted_chroma = tgt.chroma * SATURATION_BOOST;
+        let (ta, tb) = hue_to_ab(boosted_chroma.min(MAX_CHROMA), tgt.hue);
         out_l += w * mapped_l;
         out_a += w * ta;
         out_b += w * tb;
@@ -271,10 +276,10 @@ fn transfer_pixel(orig: Oklch<f32>, mappings: &[(Oklch<f32>, Oklch<f32>)]) -> Rg
     let final_l = (out_l / total_w).clamp(0.0, 1.0);
     let a = out_a / total_w;
     let b = out_b / total_w;
-
+    let final_chroma = (a * a + b * b).sqrt().clamp(0.0, MAX_CHROMA);
     oklch_to_rgb(&Oklch {
         l: final_l,
-        chroma: (a * a + b * b).sqrt().clamp(0.0, 0.5),
+        chroma: final_chroma,
         hue: OklabHue::from_degrees(b.atan2(a).to_degrees()),
     })
 }
