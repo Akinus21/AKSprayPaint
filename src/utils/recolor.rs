@@ -71,60 +71,39 @@ pub struct MatugenTheme {
 
 fn parse_matugen_json(json: &str) -> Result<MatugenTheme, String> {
     let value: serde_json::Value = serde_json::from_str(json)
-        .map_err(|e| format!("failed to parse matugen JSON: {} — raw: {}", e, &json[..json.len().min(2000)]))?;
+        .map_err(|e| format!("failed to parse matugen JSON: {} — raw: {}", e, &json[..json.len().min(500)]))?;
 
     let obj = value.as_object()
         .ok_or_else(|| "matugen output is not an object".to_string())?;
 
-    eprintln!("DEBUG matugen keys top-level: {:?}", obj.keys().collect::<Vec<_>>());
+    let colors = obj.get("colors")
+        .ok_or_else(|| "missing 'colors' key".to_string())?
+        .as_object()
+        .ok_or_else(|| "'colors' is not an object".to_string())?;
 
-    if let Some(colors) = obj.get("colors").and_then(|v| v.as_object()) {
-        eprintln!("DEBUG colors keys: {:?}", colors.keys().collect::<Vec<_>>());
-    }
-
-    if let Some(palettes) = obj.get("palettes").and_then(|v| v.as_object()) {
-        eprintln!("DEBUG palettes keys: {:?}", palettes.keys().collect::<Vec<_>>());
-    }
-
-    if let Some(palette_obj) = obj.get("palettes").and_then(|v| v.as_object()) {
-        if let Some(palette_data) = palette_obj.values().next().and_then(|v| v.as_object()) {
-            eprintln!("DEBUG first palette data keys: {:?}", palette_data.keys().collect::<Vec<_>>());
-        }
-    }
-
-    fn get_hex_from_nested(obj: &serde_json::Map<String, serde_json::Value>, light_key: &str, dark_key: &str, default_key: &str) -> Result<[u8; 3], String> {
-        let entry = obj.get(default_key)
-            .or_else(|| obj.get(dark_key))
-            .or_else(|| obj.get(light_key))
-            .ok_or_else(|| format!("missing any of {}/{}", light_key, dark_key))?
+    fn get_hex_from_scheme(obj: &serde_json::Map<String, serde_json::Value>, key: &str) -> Result<[u8; 3], String> {
+        let entry = obj.get(key)
+            .ok_or_else(|| format!("missing key: {}", key))?
             .as_object()
-            .ok_or_else(|| "color entry is not an object".to_string())?;
+            .ok_or_else(|| format!("'{}' is not an object", key))?;
 
-        let hex = entry.get("color")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| "missing color key in entry".to_string())?;
-        parse_hex(hex)
-    }
-
-    fn get_hex(obj: &serde_json::Map<String, serde_json::Value>, key: &str) -> Result<[u8; 3], String> {
-        if let Some(nested) = obj.get(key).and_then(|v| v.as_object()) {
-            return get_hex_from_nested(nested, "light", "dark", "default");
-        }
-
-        let hex = obj.get(key)
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| format!("missing key: {}", key))?;
+        let hex = entry.get("default")
+            .or_else(|| entry.get("dark"))
+            .or_else(|| entry.get("light"))
+            .ok_or_else(|| format!("missing default/dark/light in '{}'", key))?
+            .as_str()
+            .ok_or_else(|| "color value is not a string".to_string())?;
         parse_hex(hex)
     }
 
     Ok(MatugenTheme {
-        primary: get_hex(obj, "primary")?,
-        on_primary: get_hex(obj, "on_primary")?,
-        surface: get_hex(obj, "surface")?,
-        on_surface: get_hex(obj, "on_surface")?,
-        surface_variant: get_hex(obj, "surface_variant")?,
-        on_surface_variant: get_hex(obj, "on_surface_variant")?,
-        error: get_hex(obj, "error").unwrap_or([200, 50, 50]),
+        primary: get_hex_from_scheme(colors, "primary")?,
+        on_primary: get_hex_from_scheme(colors, "on_primary")?,
+        surface: get_hex_from_scheme(colors, "surface")?,
+        on_surface: get_hex_from_scheme(colors, "on_surface")?,
+        surface_variant: get_hex_from_scheme(colors, "surface_variant")?,
+        on_surface_variant: get_hex_from_scheme(colors, "on_surface_variant")?,
+        error: get_hex_from_scheme(colors, "error").unwrap_or([200, 50, 50]),
     })
 }
 
