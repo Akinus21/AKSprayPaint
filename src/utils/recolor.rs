@@ -40,7 +40,7 @@ fn extract_wallpaper_theme(input: &RgbImage) -> Result<MatugenTheme, String> {
         .map_err(|e| format!("failed to write temp image: {}", e))?;
 
     let output = std::process::Command::new("matugen")
-        .args(["image", &tmp_path.to_string_lossy(), "--json", "hex", "--source_color_index", "0"])
+        .args(["image", &tmp_path.to_string_lossy(), "--json", "hex", "--source-color-index", "0"])
         .output()
         .map_err(|e| format!("matugen failed to start: {}", e))?;
 
