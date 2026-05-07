@@ -130,7 +130,7 @@ fn parse_hex(hex: &str) -> Result<[u8; 3], String> {
 }
 
 fn build_anchor_mappings(source: &MatugenTheme, target: &NoctaliaTheme) -> Vec<(Oklch<f32>, Oklch<f32>)> {
-    let source_colors: Vec<(Oklch<f32>, Oklch<f32>)> = vec![
+    let source_colors: Vec<Oklch<f32>> = vec![
         rgb_to_oklch(&Rgb(source.primary)),
         rgb_to_oklch(&Rgb(source.on_primary)),
         rgb_to_oklch(&Rgb(source.surface)),
