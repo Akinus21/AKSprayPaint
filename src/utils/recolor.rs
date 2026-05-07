@@ -87,13 +87,21 @@ fn parse_matugen_json(json: &str) -> Result<MatugenTheme, String> {
             .as_object()
             .ok_or_else(|| format!("'{}' is not an object", key))?;
 
-        let hex = entry.get("default")
-            .or_else(|| entry.get("dark"))
-            .or_else(|| entry.get("light"))
-            .ok_or_else(|| format!("missing default/dark/light in '{}'", key))?
-            .as_str()
-            .ok_or_else(|| "color value is not a string".to_string())?;
-        parse_hex(hex)
+        for try_key in &["default", "dark", "light"] {
+            let Some(inner) = entry.get(*try_key) else { continue; };
+
+            if let Some(hex) = inner.as_str() {
+                return parse_hex(hex);
+            }
+
+            if let Some(color_obj) = inner.as_object() {
+                if let Some(hex) = color_obj.get("color").and_then(|v| v.as_str()) {
+                    return parse_hex(hex);
+                }
+            }
+        }
+
+        Err(format!("could not find color in '{}' entry (tried default/dark/light)", key))
     }
 
     Ok(MatugenTheme {
