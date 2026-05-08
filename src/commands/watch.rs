@@ -5,14 +5,18 @@ use std::time::{Duration, Instant};
 
 const DEBOUNCE_MS: u64 = 500;
 
-pub fn watch() -> Result<(), String> {
+pub fn watch(wp_override: Option<&str>) -> Result<(), String> {
     daemon::write_pid()?;
 
     let noctalia_dir = theme::noctalia_dir()
         .ok_or_else(|| "noctalia config directory not found".to_string())?;
 
-    let wp_path = wallpaper::detect_wallpaper()
-        .ok_or_else(|| "could not detect current wallpaper".to_string())?;
+    let wp_path = if let Some(path) = wp_override {
+        PathBuf::from(path)
+    } else {
+        wallpaper::detect_wallpaper()
+            .ok_or_else(|| "could not detect current wallpaper".to_string())?
+    };
     eprintln!("Watching theme: {}", noctalia_dir.display());
     eprintln!("Current wallpaper: {}", wp_path.display());
     eprintln!("Daemon started with PID {}", std::process::id());

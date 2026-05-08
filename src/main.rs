@@ -26,7 +26,11 @@ enum Command {
         verbose: bool,
     },
     /// Watch for noctalia theme changes and automatically recolor
-    Watch,
+    Watch {
+        /// Path to wallpaper (auto-detect if not provided)
+        #[arg(long)]
+        wallpaper: Option<String>,
+    },
     /// Recolor a specific image and set it as wallpaper
     Set {
         /// Path to the image file
@@ -59,7 +63,7 @@ fn main() {
 
     let result = match command {
         Command::Run { wallpaper, verbose } => commands::run::run(wallpaper.as_deref(), verbose),
-        Command::Watch => commands::watch::watch(),
+        Command::Watch { wallpaper } => commands::watch::watch(wallpaper.as_deref()),
         Command::Set { path } => commands::set::set(&path),
         Command::Status => commands::set::status(),
         Command::Clean => commands::set::clean(),
