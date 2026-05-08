@@ -8,11 +8,18 @@ const SHARPNESS: f32 = 8.0;
 const EPSILON: f32 = 1e-6;
 
 pub fn recolor_wallpaper(input: &RgbImage, theme: &NoctaliaTheme, verbose: bool) -> RgbImage {
-    let mappings = fallback_mappings(input, theme);
-
-    if verbose {
-        eprintln!("Using quantette k-means for color extraction");
-    }
+    let mappings = match extract_wallpaper_theme(input) {
+        Ok(source) => {
+            if verbose {
+                eprintln!("Using matugen extraction for color mapping");
+            }
+            build_anchor_mappings(&source, theme, verbose)
+        }
+        Err(e) => {
+            eprintln!("Matugen failed ({}), using quantette k-means fallback", e);
+            fallback_mappings(input, theme)
+        }
+    };
 
     let (width, height) = input.dimensions();
     let mut output = RgbImage::new(width, height);
@@ -35,7 +42,7 @@ fn extract_wallpaper_theme(input: &RgbImage) -> Result<MatugenTheme, String> {
         .map_err(|e| format!("failed to write temp image: {}", e))?;
 
     let mut extracted_colors = Vec::new();
-    for idx in 0..7 {
+    for idx in 0..5 {
         let output = std::process::Command::new("matugen")
             .args(["image", &tmp_path.to_string_lossy(), "--json", "hex", "--source-color-index", &idx.to_string()])
             .output()
@@ -71,8 +78,6 @@ fn extract_wallpaper_theme(input: &RgbImage) -> Result<MatugenTheme, String> {
                 2 => source_surface = color,
                 3 => source_on_surface = color,
                 4 => source_surface_variant = color,
-                5 => source_on_surface_variant = color,
-                6 => source_error = color,
                 _ => {}
             }
         }
