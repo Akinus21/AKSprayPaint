@@ -69,8 +69,8 @@ fn extract_wallpaper_theme(input: &RgbImage, target: &NoctaliaTheme) -> Result<M
         rgb_to_oklch(&Rgb(target.on_surface)),
         rgb_to_oklch(&Rgb(target.surface_variant)),
         rgb_to_oklch(&Rgb(target.on_surface_variant)),
-        rgb_to_oklch(&Rgb(target.error)),
     ];
+    let target_error = rgb_to_oklch(&Rgb(target.error));
 
     let all_extracted: Vec<Oklch<f32>> = extracted_colors.iter()
         .flat_map(|colors| colors.iter().map(|c| rgb_to_oklch(&Rgb(*c))))
@@ -86,7 +86,14 @@ fn extract_wallpaper_theme(input: &RgbImage, target: &NoctaliaTheme) -> Result<M
     let source_on_surface = find_closest_by_hue_and_lightness(&all_extracted, &target_colors[3]);
     let source_surface_variant = find_closest_by_hue_and_lightness(&all_extracted, &target_colors[4]);
     let source_on_surface_variant = find_closest_by_hue_and_lightness(&all_extracted, &target_colors[5]);
-    let source_error = find_closest_by_hue_and_lightness(&all_extracted, &target_colors[6]);
+    let source_error = {
+        let srgb: Srgb<f32> = Srgb::from_color(target_error);
+        [
+            (srgb.red * 255.0).round() as u8,
+            (srgb.green * 255.0).round() as u8,
+            (srgb.blue * 255.0).round() as u8,
+        ]
+    };
 
     Ok(MatugenTheme {
         primary: source_primary,
