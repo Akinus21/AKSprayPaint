@@ -80,12 +80,20 @@ fn extract_wallpaper_theme(input: &RgbImage, target: &NoctaliaTheme) -> Result<M
         return Err("no colors extracted".to_string());
     }
 
-    let source_primary = find_closest_by_hue_and_lightness(&all_extracted, &target_colors[0]);
-    let source_on_primary = find_closest_by_hue_and_lightness(&all_extracted, &target_colors[1]);
-    let source_surface = find_closest_by_hue_and_lightness(&all_extracted, &target_colors[2]);
-    let source_on_surface = find_closest_by_hue_and_lightness(&all_extracted, &target_colors[3]);
-    let source_surface_variant = find_closest_by_hue_and_lightness(&all_extracted, &target_colors[4]);
-    let source_on_surface_variant = find_closest_by_hue_and_lightness(&all_extracted, &target_colors[5]);
+    let mut available_sources = all_extracted.clone();
+    let mut matched_sources: Vec<[u8; 3]> = Vec::new();
+
+    for target in &target_colors {
+        let closest_idx = find_best_match_idx(&available_sources, target);
+        matched_sources.push(available_sources.remove(closest_idx));
+    }
+
+    let source_primary = matched_sources[0];
+    let source_on_primary = matched_sources[1];
+    let source_surface = matched_sources[2];
+    let source_on_surface = matched_sources[3];
+    let source_surface_variant = matched_sources[4];
+    let source_on_surface_variant = matched_sources[5];
     let source_error = {
         let srgb: Srgb<f32> = Srgb::from_color(target_error);
         [
@@ -106,26 +114,24 @@ fn extract_wallpaper_theme(input: &RgbImage, target: &NoctaliaTheme) -> Result<M
     })
 }
 
-fn find_closest_by_hue_and_lightness(colors: &[Oklch<f32>], target: &Oklch<f32>) -> [u8; 3] {
+fn find_best_match_idx(colors: &[Oklch<f32>], target: &Oklch<f32>) -> usize {
     let target_l = target.l;
+    let target_c = target.chroma;
     let target_h = target.hue;
-    let closest = colors.iter()
-        .min_by(|a, b| {
-            let da_lightness = (a.l - target_l).abs();
-            let db_lightness = (b.l - target_l).abs();
-            let da_hue = hue_dist(target_h, a.hue) / 180.0;
-            let db_hue = hue_dist(target_h, b.hue) / 180.0;
-            let score_a = da_lightness * 0.5 + da_hue * 0.5;
-            let score_b = db_lightness * 0.5 + db_hue * 0.5;
-            score_a.partial_cmp(&score_b).unwrap()
-        })
-        .unwrap_or(target);
-    let srgb: Srgb<f32> = Srgb::from_color(*closest);
-    [
-        (srgb.red * 255.0).round() as u8,
-        (srgb.green * 255.0).round() as u8,
-        (srgb.blue * 255.0).round() as u8,
-    ]
+    let mut best_idx = 0;
+    let mut best_score = f32::MAX;
+
+    for (i, color) in colors.iter().enumerate() {
+        let da_lightness = (color.l - target_l).abs();
+        let da_chroma = (color.chroma - target_c).abs();
+        let da_hue = hue_dist(target_h, color.hue) / 180.0;
+        let score = da_lightness * 0.33 + da_chroma * 0.34 + da_hue * 0.33;
+        if score < best_score {
+            best_score = score;
+            best_idx = i;
+        }
+    }
+    best_idx
 }
 
 fn extract_colors_from_json(json: &str) -> Result<Vec<[u8; 3]>, String> {
