@@ -77,6 +77,6 @@ fn apply_theme(wp_path: &PathBuf) -> Result<(), String> {
         wallpaper::set_wallpaper(&cached)
     } else {
         eprintln!("Recoloring wallpaper to match theme ({})...", hash);
-        crate::commands::run::apply_recolor(wp_path, &hash)
+        crate::commands::run::apply_recolor(wp_path, &hash, false)
     }
 }

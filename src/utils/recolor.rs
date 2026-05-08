@@ -170,8 +170,8 @@ fn build_anchor_mappings(source: &MatugenTheme, target: &NoctaliaTheme, verbose:
         };
 
         if verbose {
-            eprintln!("Source: {} | L:{:.3} C:{:.3} H:{:.1}°", slot_name, src_oklch.lightness, src_oklch.chroma, src_oklch.hue.into_positive_degrees());
-            eprintln!("Target: {} | L:{:.3} C:{:.3} H:{:.1}°", slot_name, target_oklch.lightness, target_oklch.chroma, target_oklch.hue.into_positive_degrees());
+            eprintln!("Source: {} | L:{:.3} C:{:.3} H:{:.1}°", slot_name, src_oklch.l, src_oklch.chroma, src_oklch.hue.into_positive_degrees());
+            eprintln!("Target: {} | L:{:.3} C:{:.3} H:{:.1}°", slot_name, target_oklch.l, target_oklch.chroma, target_oklch.hue.into_positive_degrees());
             eprintln!("---");
         }
 

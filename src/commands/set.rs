@@ -20,7 +20,7 @@ pub fn set(path: &str) -> Result<(), String> {
     let rgb_img = img.to_rgb8();
 
     let (theme_data, _) = theme::read_theme()?;
-    let recolored = recolor::recolor_wallpaper(&rgb_img, &theme_data);
+    let recolored = recolor::recolor_wallpaper(&rgb_img, &theme_data, false);
 
     let mut buf = std::io::Cursor::new(Vec::new());
     let ext = wp_path.extension().unwrap_or_default().to_string_lossy();
