@@ -8,7 +8,7 @@ const SHARPNESS: f32 = 8.0;
 const EPSILON: f32 = 1e-6;
 
 pub fn recolor_wallpaper(input: &RgbImage, theme: &NoctaliaTheme, verbose: bool) -> RgbImage {
-    let mappings = match extract_wallpaper_theme(input) {
+    let mappings = match extract_wallpaper_theme(input, theme) {
         Ok(source) => {
             if verbose {
                 eprintln!("Using matugen extraction for color mapping");
@@ -32,7 +32,7 @@ pub fn recolor_wallpaper(input: &RgbImage, theme: &NoctaliaTheme, verbose: bool)
     output
 }
 
-fn extract_wallpaper_theme(input: &RgbImage) -> Result<MatugenTheme, String> {
+fn extract_wallpaper_theme(input: &RgbImage, target: &NoctaliaTheme) -> Result<MatugenTheme, String> {
     let mut buf = std::io::Cursor::new(Vec::new());
     input.write_to(&mut buf, image::ImageFormat::Png)
         .map_err(|e| format!("failed to encode image: {}", e))?;
@@ -41,8 +41,8 @@ fn extract_wallpaper_theme(input: &RgbImage) -> Result<MatugenTheme, String> {
     std::fs::write(&tmp_path, buf.get_ref())
         .map_err(|e| format!("failed to write temp image: {}", e))?;
 
-    let mut extracted_colors = Vec::new();
-    for idx in 0..1 {
+    let mut extracted_colors: Vec<Vec<[u8; 3]>> = Vec::new();
+    for idx in 0..7 {
         let output = std::process::Command::new("matugen")
             .args(["image", &tmp_path.to_string_lossy(), "--json", "hex", "--source-color-index", &idx.to_string()])
             .output()
@@ -62,22 +62,31 @@ fn extract_wallpaper_theme(input: &RgbImage) -> Result<MatugenTheme, String> {
         return Err("matugen failed to extract any colors".to_string());
     }
 
-    let mut source_primary = [128, 128, 128];
-    let mut source_on_primary = [128, 128, 128];
-    let mut source_surface = [128, 128, 128];
-    let mut source_on_surface = [128, 128, 128];
-    let mut source_surface_variant = [128, 128, 128];
-    let mut source_on_surface_variant = [128, 128, 128];
-    let mut source_error = [200, 50, 50];
+    let target_colors = vec![
+        rgb_to_oklch(&Rgb(target.primary)),
+        rgb_to_oklch(&Rgb(target.on_primary)),
+        rgb_to_oklch(&Rgb(target.surface)),
+        rgb_to_oklch(&Rgb(target.on_surface)),
+        rgb_to_oklch(&Rgb(target.surface_variant)),
+        rgb_to_oklch(&Rgb(target.on_surface_variant)),
+        rgb_to_oklch(&Rgb(target.error)),
+    ];
 
-    for (i, colors) in extracted_colors.iter().enumerate() {
-        if let Some(&color) = colors.first() {
-            match i {
-                0 => source_primary = color,
-                _ => {}
-            }
-        }
+    let all_extracted: Vec<Oklch<f32>> = extracted_colors.iter()
+        .flat_map(|colors| colors.iter().map(|c| rgb_to_oklch(&Rgb(*c))))
+        .collect();
+
+    if all_extracted.is_empty() {
+        return Err("no colors extracted".to_string());
     }
+
+    let source_primary = find_closest_by_chroma(&all_extracted, &target_colors[0]);
+    let source_on_primary = find_closest_by_chroma(&all_extracted, &target_colors[1]);
+    let source_surface = find_closest_by_chroma(&all_extracted, &target_colors[2]);
+    let source_on_surface = find_closest_by_chroma(&all_extracted, &target_colors[3]);
+    let source_surface_variant = find_closest_by_chroma(&all_extracted, &target_colors[4]);
+    let source_on_surface_variant = find_closest_by_chroma(&all_extracted, &target_colors[5]);
+    let source_error = find_closest_by_chroma(&all_extracted, &target_colors[6]);
 
     Ok(MatugenTheme {
         primary: source_primary,
@@ -88,6 +97,23 @@ fn extract_wallpaper_theme(input: &RgbImage) -> Result<MatugenTheme, String> {
         on_surface_variant: source_on_surface_variant,
         error: source_error,
     })
+}
+
+fn find_closest_by_chroma(colors: &[Oklch<f32>], target: &Oklch<f32>) -> [u8; 3] {
+    let target_c = target.chroma;
+    let closest = colors.iter()
+        .min_by(|a, b| {
+            let da = (a.chroma - target_c).abs();
+            let db = (b.chroma - target_c).abs();
+            da.partial_cmp(&db).unwrap()
+        })
+        .unwrap_or(target);
+    let srgb: Srgb<f32> = Srgb::from_color(*closest);
+    [
+        (srgb.red * 255.0).round() as u8,
+        (srgb.green * 255.0).round() as u8,
+        (srgb.blue * 255.0).round() as u8,
+    ]
 }
 
 fn extract_colors_from_json(json: &str) -> Result<Vec<[u8; 3]>, String> {
