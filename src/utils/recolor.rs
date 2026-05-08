@@ -39,23 +39,69 @@ fn extract_wallpaper_theme(input: &RgbImage) -> Result<MatugenTheme, String> {
     std::fs::write(&tmp_path, buf.get_ref())
         .map_err(|e| format!("failed to write temp image: {}", e))?;
 
-    let output = std::process::Command::new("matugen")
-        .args(["image", &tmp_path.to_string_lossy(), "--json", "hex", "--source-color-index", "0"])
-        .output()
-        .map_err(|e| format!("matugen failed to start: {}", e))?;
+    let mut extracted_colors = Vec::new();
+    for idx in 0..7 {
+        let output = std::process::Command::new("matugen")
+            .args(["image", &tmp_path.to_string_lossy(), "--json", "hex", "--source-color-index", &idx.to_string()])
+            .output()
+            .map_err(|e| format!("matugen failed to start: {}", e))?;
+
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+            if let Ok(colors) = extract_colors_from_json(&stdout) {
+                extracted_colors.push(colors);
+            }
+        }
+    }
 
     std::fs::remove_file(&tmp_path).ok();
 
-    if !output.status.success() {
-        return Err(format!(
-            "matugen exited {}: {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr)
-        ));
+    if extracted_colors.is_empty() {
+        return Err("matugen failed to extract any colors".to_string());
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    parse_matugen_json(&stdout)
+    let colors = &extracted_colors[0];
+    Ok(MatugenTheme {
+        primary: colors.get(0).copied().unwrap_or([128, 128, 128]),
+        on_primary: colors.get(1).copied().unwrap_or([128, 128, 128]),
+        surface: colors.get(2).copied().unwrap_or([128, 128, 128]),
+        on_surface: colors.get(3).copied().unwrap_or([128, 128, 128]),
+        surface_variant: colors.get(4).copied().unwrap_or([128, 128, 128]),
+        on_surface_variant: colors.get(5).copied().unwrap_or([128, 128, 128]),
+        error: colors.get(6).copied().unwrap_or([200, 50, 50]),
+    })
+}
+
+fn extract_colors_from_json(json: &str) -> Result<Vec<[u8; 3]>, String> {
+    let value: serde_json::from_str::<serde_json::Value>(json)
+        .map_err(|e| format!("failed to parse matugen JSON: {}", e))?;
+    let obj = value.as_object().ok_or("not an object")?;
+    let colors = obj.get("colors").ok_or("missing colors")?.as_object().ok_or("colors not object")?;
+
+    let mut result = Vec::new();
+    for key in &["primary", "on_primary", "surface", "on_surface", "surface_variant", "on_surface_variant", "error"] {
+        if let Ok(rgb) = get_hex_from_scheme(colors, key) {
+            result.push(rgb);
+        }
+    }
+    Ok(result)
+}
+
+fn get_hex_from_scheme(obj: &serde_json::Map<String, serde_json::Value>, key: &str) -> Result<[u8; 3], String> {
+    let entry = obj.get(key).ok_or_else(|| format!("missing key: {}", key))?
+        .as_object().ok_or_else(|| format!("'{}' is not an object", key))?;
+    for try_key in &["default", "dark", "light"] {
+        let Some(inner) = entry.get(*try_key) else { continue };
+        if let Some(hex) = inner.as_str() {
+            return parse_hex(hex);
+        }
+        if let Some(color_obj) = inner.as_object() {
+            if let Some(hex) = color_obj.get("color").and_then(|v| v.as_str()) {
+                return parse_hex(hex);
+            }
+        }
+    }
+    Err(format!("could not find color in '{}'", key))
 }
 
 #[derive(Debug)]
@@ -67,52 +113,6 @@ pub struct MatugenTheme {
     pub surface_variant: [u8; 3],
     pub on_surface_variant: [u8; 3],
     pub error: [u8; 3],
-}
-
-fn parse_matugen_json(json: &str) -> Result<MatugenTheme, String> {
-    let value: serde_json::Value = serde_json::from_str(json)
-        .map_err(|e| format!("failed to parse matugen JSON: {} — raw: {}", e, &json[..json.len().min(500)]))?;
-
-    let obj = value.as_object()
-        .ok_or_else(|| "matugen output is not an object".to_string())?;
-
-    let colors = obj.get("colors")
-        .ok_or_else(|| "missing 'colors' key".to_string())?
-        .as_object()
-        .ok_or_else(|| "'colors' is not an object".to_string())?;
-
-    fn get_hex_from_scheme(obj: &serde_json::Map<String, serde_json::Value>, key: &str) -> Result<[u8; 3], String> {
-        let entry = obj.get(key)
-            .ok_or_else(|| format!("missing key: {}", key))?
-            .as_object()
-            .ok_or_else(|| format!("'{}' is not an object", key))?;
-
-        for try_key in &["default", "dark", "light"] {
-            let Some(inner) = entry.get(*try_key) else { continue; };
-
-            if let Some(hex) = inner.as_str() {
-                return parse_hex(hex);
-            }
-
-            if let Some(color_obj) = inner.as_object() {
-                if let Some(hex) = color_obj.get("color").and_then(|v| v.as_str()) {
-                    return parse_hex(hex);
-                }
-            }
-        }
-
-        Err(format!("could not find color in '{}' entry (tried default/dark/light)", key))
-    }
-
-    Ok(MatugenTheme {
-        primary: get_hex_from_scheme(colors, "primary")?,
-        on_primary: get_hex_from_scheme(colors, "on_primary")?,
-        surface: get_hex_from_scheme(colors, "surface")?,
-        on_surface: get_hex_from_scheme(colors, "on_surface")?,
-        surface_variant: get_hex_from_scheme(colors, "surface_variant")?,
-        on_surface_variant: get_hex_from_scheme(colors, "on_surface_variant")?,
-        error: get_hex_from_scheme(colors, "error").unwrap_or([200, 50, 50]),
-    })
 }
 
 fn parse_hex(hex: &str) -> Result<[u8; 3], String> {
