@@ -24,6 +24,9 @@ enum Command {
         /// Verbose output
         #[arg(long)]
         verbose: bool,
+        /// Skip cache and force recolor
+        #[arg(long)]
+        no_cache: bool,
     },
     /// Watch for noctalia theme changes and automatically recolor
     Watch {
@@ -62,7 +65,7 @@ fn main() {
     };
 
     let result = match command {
-        Command::Run { wallpaper, verbose } => commands::run::run(wallpaper.as_deref(), verbose),
+        Command::Run { wallpaper, verbose, no_cache } => commands::run::run(wallpaper.as_deref(), verbose, no_cache),
         Command::Watch { wallpaper } => commands::watch::watch(wallpaper.as_deref()),
         Command::Set { path } => commands::set::set(&path),
         Command::Status => commands::set::status(),

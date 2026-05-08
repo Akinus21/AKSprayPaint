@@ -1,7 +1,7 @@
 use crate::utils::{cache, recolor, theme, wallpaper};
 use std::path::Path;
 
-pub fn run(wp_override: Option<&str>, verbose: bool) -> Result<(), String> {
+pub fn run(wp_override: Option<&str>, verbose: bool, no_cache: bool) -> Result<(), String> {
     let wp_path = if let Some(path) = wp_override {
         Path::new(path).to_path_buf()
     } else {
@@ -13,7 +13,10 @@ pub fn run(wp_override: Option<&str>, verbose: bool) -> Result<(), String> {
     let (_, theme_content) = theme::read_theme()?;
     let hash = theme::theme_hash(&theme_content);
 
-    if let Some(cached_path) = cache::find_cached(&hash, &wp_path) {
+    if no_cache {
+        eprintln!("Recoloring wallpaper to match theme ({})...", hash);
+        apply_recolor(&wp_path, &hash, verbose)
+    } else if let Some(cached_path) = cache::find_cached(&hash, &wp_path) {
         eprintln!("Using cached recolored wallpaper: {}", cached_path.display());
         wallpaper::set_wallpaper(&cached_path)
     } else {
