@@ -60,15 +60,37 @@ fn extract_wallpaper_theme(input: &RgbImage) -> Result<MatugenTheme, String> {
         return Err("matugen failed to extract any colors".to_string());
     }
 
-    let colors = &extracted_colors[0];
+    let mut source_primary = [128, 128, 128];
+    let mut source_on_primary = [128, 128, 128];
+    let mut source_surface = [128, 128, 128];
+    let mut source_on_surface = [128, 128, 128];
+    let mut source_surface_variant = [128, 128, 128];
+    let mut source_on_surface_variant = [128, 128, 128];
+    let mut source_error = [200, 50, 50];
+
+    for (i, colors) in extracted_colors.iter().enumerate() {
+        if let Some(&color) = colors.first() {
+            match i {
+                0 => source_primary = color,
+                1 => source_on_primary = color,
+                2 => source_surface = color,
+                3 => source_on_surface = color,
+                4 => source_surface_variant = color,
+                5 => source_on_surface_variant = color,
+                6 => source_error = color,
+                _ => {}
+            }
+        }
+    }
+
     Ok(MatugenTheme {
-        primary: colors.get(0).copied().unwrap_or([128, 128, 128]),
-        on_primary: colors.get(1).copied().unwrap_or([128, 128, 128]),
-        surface: colors.get(2).copied().unwrap_or([128, 128, 128]),
-        on_surface: colors.get(3).copied().unwrap_or([128, 128, 128]),
-        surface_variant: colors.get(4).copied().unwrap_or([128, 128, 128]),
-        on_surface_variant: colors.get(5).copied().unwrap_or([128, 128, 128]),
-        error: colors.get(6).copied().unwrap_or([200, 50, 50]),
+        primary: source_primary,
+        on_primary: source_on_primary,
+        surface: source_surface,
+        on_surface: source_on_surface,
+        surface_variant: source_surface_variant,
+        on_surface_variant: source_on_surface_variant,
+        error: source_error,
     })
 }
 
