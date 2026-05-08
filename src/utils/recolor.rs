@@ -156,9 +156,9 @@ fn build_anchor_mappings(source: &MatugenTheme, target: &NoctaliaTheme) -> Vec<(
         let src_oklch = rgb_to_oklch(&Rgb(src_rgb));
         let target_oklch = rgb_to_oklch(&Rgb(target_rgb));
 
-        let mapped_target = if src_oklch.chroma < LOW_CHROMA_THRESHOLD {
+        let mapped_target = if src_oklch.chroma < LOW_CHROMA_THRESHOLD || is_green_or_yellow(src_oklch.hue) {
             target_oklch
-        } else if is_green_or_yellow(src_oklch.hue) {
+        } else {
             target_colors.iter()
                 .min_by(|a, b| {
                     let da = hue_dist(src_oklch.hue, a.hue);
@@ -167,8 +167,6 @@ fn build_anchor_mappings(source: &MatugenTheme, target: &NoctaliaTheme) -> Vec<(
                 })
                 .copied()
                 .unwrap_or(target_oklch)
-        } else {
-            target_oklch
         };
 
         (src_oklch, mapped_target)
