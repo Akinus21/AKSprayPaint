@@ -80,13 +80,13 @@ fn extract_wallpaper_theme(input: &RgbImage, target: &NoctaliaTheme) -> Result<M
         return Err("no colors extracted".to_string());
     }
 
-    let source_primary = find_closest_by_lightness(&all_extracted, &target_colors[0]);
-    let source_on_primary = find_closest_by_lightness(&all_extracted, &target_colors[1]);
-    let source_surface = find_closest_by_lightness(&all_extracted, &target_colors[2]);
-    let source_on_surface = find_closest_by_lightness(&all_extracted, &target_colors[3]);
-    let source_surface_variant = find_closest_by_lightness(&all_extracted, &target_colors[4]);
-    let source_on_surface_variant = find_closest_by_lightness(&all_extracted, &target_colors[5]);
-    let source_error = find_closest_by_lightness(&all_extracted, &target_colors[6]);
+    let source_primary = find_closest_by_hue_and_lightness(&all_extracted, &target_colors[0]);
+    let source_on_primary = find_closest_by_hue_and_lightness(&all_extracted, &target_colors[1]);
+    let source_surface = find_closest_by_hue_and_lightness(&all_extracted, &target_colors[2]);
+    let source_on_surface = find_closest_by_hue_and_lightness(&all_extracted, &target_colors[3]);
+    let source_surface_variant = find_closest_by_hue_and_lightness(&all_extracted, &target_colors[4]);
+    let source_on_surface_variant = find_closest_by_hue_and_lightness(&all_extracted, &target_colors[5]);
+    let source_error = find_closest_by_hue_and_lightness(&all_extracted, &target_colors[6]);
 
     Ok(MatugenTheme {
         primary: source_primary,
@@ -99,13 +99,18 @@ fn extract_wallpaper_theme(input: &RgbImage, target: &NoctaliaTheme) -> Result<M
     })
 }
 
-fn find_closest_by_lightness(colors: &[Oklch<f32>], target: &Oklch<f32>) -> [u8; 3] {
+fn find_closest_by_hue_and_lightness(colors: &[Oklch<f32>], target: &Oklch<f32>) -> [u8; 3] {
     let target_l = target.l;
+    let target_h = target.hue;
     let closest = colors.iter()
         .min_by(|a, b| {
-            let da = (a.l - target_l).abs();
-            let db = (b.l - target_l).abs();
-            da.partial_cmp(&db).unwrap()
+            let da_lightness = (a.l - target_l).abs();
+            let db_lightness = (b.l - target_l).abs();
+            let da_hue = hue_dist(target_h, a.hue) / 180.0;
+            let db_hue = hue_dist(target_h, b.hue) / 180.0;
+            let score_a = da_lightness * 0.5 + da_hue * 0.5;
+            let score_b = db_lightness * 0.5 + db_hue * 0.5;
+            score_a.partial_cmp(&score_b).unwrap()
         })
         .unwrap_or(target);
     let srgb: Srgb<f32> = Srgb::from_color(*closest);
