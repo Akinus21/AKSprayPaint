@@ -151,7 +151,7 @@ fn build_anchor_mappings(source: &MatugenTheme, target: &NoctaliaTheme) -> Vec<(
         let src_oklch = rgb_to_oklch(&Rgb(src_rgb));
         let target_oklch = rgb_to_oklch(&Rgb(target_rgb));
 
-        let mapped_target = if src_oklch.chroma < CHROMA_THRESHOLD {
+        let mapped_target = if src_oklch.chroma >= CHROMA_THRESHOLD {
             target_oklch
         } else {
             target_colors.iter()
