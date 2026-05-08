@@ -85,7 +85,13 @@ fn extract_wallpaper_theme(input: &RgbImage, target: &NoctaliaTheme) -> Result<M
 
     for target in &target_colors {
         let closest_idx = find_best_match_idx(&available_sources, target);
-        matched_sources.push(available_sources.remove(closest_idx));
+        let oklch = available_sources.remove(closest_idx);
+        let srgb: Srgb<f32> = Srgb::from_color(oklch);
+        matched_sources.push([
+            (srgb.red * 255.0).round() as u8,
+            (srgb.green * 255.0).round() as u8,
+            (srgb.blue * 255.0).round() as u8,
+        ]);
     }
 
     let source_primary = matched_sources[0];
@@ -192,11 +198,6 @@ fn parse_hex(hex: &str) -> Result<[u8; 3], String> {
 }
 
 fn build_anchor_mappings(source: &MatugenTheme, target: &NoctaliaTheme, verbose: bool) -> Vec<(Oklch<f32>, Oklch<f32>)> {
-    let target_colors: Vec<Oklch<f32>> = target.palette()
-        .into_iter()
-        .map(|c| rgb_to_oklch(&Rgb(c)))
-        .collect();
-
     let slots: Vec<(&str, [u8; 3], [u8; 3])> = vec![
         ("primary", source.primary, target.primary),
         ("on_primary", source.on_primary, target.on_primary),
