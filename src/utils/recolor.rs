@@ -42,7 +42,7 @@ fn extract_wallpaper_theme(input: &RgbImage) -> Result<MatugenTheme, String> {
         .map_err(|e| format!("failed to write temp image: {}", e))?;
 
     let mut extracted_colors = Vec::new();
-    for idx in 0..3 {
+    for idx in 0..2 {
         let output = std::process::Command::new("matugen")
             .args(["image", &tmp_path.to_string_lossy(), "--json", "hex", "--source-color-index", &idx.to_string()])
             .output()
@@ -75,7 +75,6 @@ fn extract_wallpaper_theme(input: &RgbImage) -> Result<MatugenTheme, String> {
             match i {
                 0 => source_primary = color,
                 1 => source_on_primary = color,
-                2 => source_surface = color,
                 _ => {}
             }
         }
