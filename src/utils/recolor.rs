@@ -152,13 +152,6 @@ fn parse_hex(hex: &str) -> Result<[u8; 3], String> {
 }
 
 fn build_anchor_mappings(source: &MatugenTheme, target: &NoctaliaTheme, verbose: bool) -> Vec<(Oklch<f32>, Oklch<f32>)> {
-    const LOW_CHROMA_THRESHOLD: f32 = 0.02;
-
-    let target_colors: Vec<Oklch<f32>> = target.palette()
-        .into_iter()
-        .map(|c| rgb_to_oklch(&Rgb(c)))
-        .collect();
-
     let slots: Vec<(&str, [u8; 3], [u8; 3])> = vec![
         ("primary", source.primary, target.primary),
         ("on_primary", source.on_primary, target.on_primary),
@@ -173,26 +166,13 @@ fn build_anchor_mappings(source: &MatugenTheme, target: &NoctaliaTheme, verbose:
         let src_oklch = rgb_to_oklch(&Rgb(src_rgb));
         let target_oklch = rgb_to_oklch(&Rgb(target_rgb));
 
-        let mapped_target = if src_oklch.chroma < LOW_CHROMA_THRESHOLD {
-            target_oklch
-        } else {
-            target_colors.iter()
-                .min_by(|a, b| {
-                    let da = hue_dist(src_oklch.hue, a.hue);
-                    let db = hue_dist(src_oklch.hue, b.hue);
-                    da.partial_cmp(&db).unwrap()
-                })
-                .copied()
-                .unwrap_or(target_oklch)
-        };
-
         if verbose {
             eprintln!("Source: {} | L:{:.3} C:{:.3} H:{:.1}°", slot_name, src_oklch.l, src_oklch.chroma, src_oklch.hue.into_positive_degrees());
-            eprintln!("Target: {} | L:{:.3} C:{:.3} H:{:.1}°", slot_name, mapped_target.l, mapped_target.chroma, mapped_target.hue.into_positive_degrees());
+            eprintln!("Target: {} | L:{:.3} C:{:.3} H:{:.1}°", slot_name, target_oklch.l, target_oklch.chroma, target_oklch.hue.into_positive_degrees());
             eprintln!("---");
         }
 
-        (src_oklch, mapped_target)
+        (src_oklch, target_oklch)
     }).collect();
 
     mappings
