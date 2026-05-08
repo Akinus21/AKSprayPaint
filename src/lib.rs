@@ -20,7 +20,6 @@ impl NoctaliaTheme {
             self.on_surface,
             self.surface_variant,
             self.on_surface_variant,
-            self.error,
         ]
     }
 

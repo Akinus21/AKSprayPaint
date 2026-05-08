@@ -198,7 +198,6 @@ fn build_anchor_mappings(source: &MatugenTheme, target: &NoctaliaTheme, verbose:
         ("on_surface", source.on_surface, target.on_surface),
         ("surface_variant", source.surface_variant, target.surface_variant),
         ("on_surface_variant", source.on_surface_variant, target.on_surface_variant),
-        ("error", source.error, target.error),
     ];
 
     let mappings: Vec<_> = slots.into_iter().map(|(slot_name, src_rgb, target_rgb)| {
