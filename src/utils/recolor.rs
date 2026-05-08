@@ -147,24 +147,24 @@ fn build_anchor_mappings(source: &MatugenTheme, target: &NoctaliaTheme) -> Vec<(
         ("error", source.error, target.error),
     ];
 
-    slots.into_iter().map(|(_, src_rgb, target_rgb)| {
+slots.into_iter().map(|(_, src_rgb, target_rgb)| {
         let src_oklch = rgb_to_oklch(&Rgb(src_rgb));
         let target_oklch = rgb_to_oklch(&Rgb(target_rgb));
 
-        let mapped_target = if src_oklch.chroma >= CHROMA_THRESHOLD {
-            target_oklch
-        } else {
+        let mapped_source = if src_oklch.chroma >= CHROMA_THRESHOLD {
             target_colors.iter()
                 .min_by(|a, b| {
-                    let da = hue_dist(src_oklch.hue, a.hue);
-                    let db = hue_dist(src_oklch.hue, b.hue);
+                    let da = hue_dist(target_oklch.hue, a.hue);
+                    let db = hue_dist(target_oklch.hue, b.hue);
                     da.partial_cmp(&db).unwrap()
                 })
                 .copied()
                 .unwrap_or(target_oklch)
+        } else {
+            target_oklch
         };
 
-        (src_oklch, mapped_target)
+        (mapped_source, src_oklch)
     }).collect()
 }
 
