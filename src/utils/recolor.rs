@@ -122,16 +122,14 @@ fn extract_wallpaper_theme(input: &RgbImage, target: &NoctaliaTheme) -> Result<M
 
 fn find_best_match_idx(colors: &[Oklch<f32>], target: &Oklch<f32>) -> usize {
     let target_l = target.l;
-    let target_c = target.chroma;
     let target_h = target.hue;
     let mut best_idx = 0;
     let mut best_score = f32::MAX;
 
     for (i, color) in colors.iter().enumerate() {
         let da_lightness = (color.l - target_l).abs();
-        let da_chroma = (color.chroma - target_c).abs();
         let da_hue = hue_dist(target_h, color.hue) / 180.0;
-        let score = da_lightness * 0.33 + da_chroma * 0.34 + da_hue * 0.33;
+        let score = da_lightness * 0.5 + da_hue * 0.5;
         if score < best_score {
             best_score = score;
             best_idx = i;
