@@ -130,8 +130,7 @@ fn parse_hex(hex: &str) -> Result<[u8; 3], String> {
 }
 
 fn build_anchor_mappings(source: &MatugenTheme, target: &NoctaliaTheme) -> Vec<(Oklch<f32>, Oklch<f32>)> {
-    const LOW_CHROMA_THRESHOLD: f32 = 0.03;
-    const HIGH_CHROMA_THRESHOLD: f32 = 0.10;
+    const CHROMA_THRESHOLD: f32 = 0.20;
 
     let target_colors: Vec<Oklch<f32>> = target.palette()
         .into_iter()
@@ -152,9 +151,9 @@ fn build_anchor_mappings(source: &MatugenTheme, target: &NoctaliaTheme) -> Vec<(
         let src_oklch = rgb_to_oklch(&Rgb(src_rgb));
         let target_oklch = rgb_to_oklch(&Rgb(target_rgb));
 
-        let mapped_target = if src_oklch.chroma < LOW_CHROMA_THRESHOLD {
+        let mapped_target = if src_oklch.chroma < CHROMA_THRESHOLD {
             target_oklch
-        } else if src_oklch.chroma < HIGH_CHROMA_THRESHOLD {
+        } else {
             target_colors.iter()
                 .min_by(|a, b| {
                     let da = hue_dist(src_oklch.hue, a.hue);
@@ -163,8 +162,6 @@ fn build_anchor_mappings(source: &MatugenTheme, target: &NoctaliaTheme) -> Vec<(
                 })
                 .copied()
                 .unwrap_or(target_oklch)
-        } else {
-            target_oklch
         };
 
         (src_oklch, mapped_target)
