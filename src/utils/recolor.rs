@@ -131,10 +131,10 @@ fn parse_hex(hex: &str) -> Result<[u8; 3], String> {
 
 fn build_anchor_mappings(source: &MatugenTheme, target: &NoctaliaTheme, verbose: bool) -> Vec<(Oklch<f32>, Oklch<f32>)> {
     let slots: Vec<(&str, [u8; 3], [u8; 3])> = vec![
-        ("primary", source.surface, target.primary),
-        ("on_primary", source.on_primary, target.on_primary),
-        ("surface", source.primary, target.surface),
-        ("on_surface", source.on_surface, target.on_surface),
+        ("primary", source.primary, target.primary),
+        ("on_primary", source.on_surface, target.on_primary),
+        ("surface", source.surface, target.surface),
+        ("on_surface", source.on_primary, target.on_surface),
         ("surface_variant", source.surface_variant, target.surface_variant),
         ("on_surface_variant", source.on_surface_variant, target.on_surface_variant),
         ("error", source.error, target.error),
