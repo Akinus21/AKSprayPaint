@@ -73,7 +73,7 @@ fn extract_wallpaper_theme(input: &RgbImage) -> Result<MatugenTheme, String> {
 }
 
 fn extract_colors_from_json(json: &str) -> Result<Vec<[u8; 3]>, String> {
-    let value: serde_json::from_str::<serde_json::Value>(json)
+    let value: serde_json::Value = serde_json::from_str(json)
         .map_err(|e| format!("failed to parse matugen JSON: {}", e))?;
     let obj = value.as_object().ok_or("not an object")?;
     let colors = obj.get("colors").ok_or("missing colors")?.as_object().ok_or("colors not object")?;
