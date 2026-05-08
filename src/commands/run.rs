@@ -1,7 +1,7 @@
 use crate::utils::{cache, recolor, theme, wallpaper};
 use std::path::Path;
 
-pub fn run(wp_override: Option<&str>) -> Result<(), String> {
+pub fn run(wp_override: Option<&str>, verbose: bool) -> Result<(), String> {
     let wp_path = if let Some(path) = wp_override {
         Path::new(path).to_path_buf()
     } else {
@@ -18,18 +18,18 @@ pub fn run(wp_override: Option<&str>) -> Result<(), String> {
         wallpaper::set_wallpaper(&cached_path)
     } else {
         eprintln!("Recoloring wallpaper to match theme ({})...", hash);
-        apply_recolor(&wp_path, &hash)?;
+        apply_recolor(&wp_path, &hash, verbose)?;
         Ok(())
     }
 }
 
-pub fn apply_recolor(wp_path: &std::path::Path, hash: &str) -> Result<(), String> {
+pub fn apply_recolor(wp_path: &std::path::Path, hash: &str, verbose: bool) -> Result<(), String> {
     let img = image::open(wp_path)
         .map_err(|e| format!("failed to load image: {}", e))?;
     let rgb_img = img.to_rgb8();
 
     let (theme_data, _) = theme::read_theme()?;
-    let recolored = recolor::recolor_wallpaper(&rgb_img, &theme_data);
+    let recolored = recolor::recolor_wallpaper(&rgb_img, &theme_data, verbose);
 
     let mut buf = std::io::Cursor::new(Vec::new());
     let ext = wp_path.extension().unwrap_or_default().to_string_lossy();

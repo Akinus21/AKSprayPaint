@@ -8,6 +8,8 @@ use clap::{Parser, Subcommand};
 struct Cli {
     #[arg(long, help = "Kill the running watch daemon")]
     disable: bool,
+    #[arg(long, help = "Verbose output")]
+    verbose: bool,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -19,6 +21,9 @@ enum Command {
         /// Path to wallpaper (auto-detect if not provided)
         #[arg(long)]
         wallpaper: Option<String>,
+        /// Verbose output
+        #[arg(long)]
+        verbose: bool,
     },
     /// Watch for noctalia theme changes and automatically recolor
     Watch,
@@ -53,7 +58,7 @@ fn main() {
     };
 
     let result = match command {
-        Command::Run { wallpaper } => commands::run::run(wallpaper.as_deref()),
+        Command::Run { wallpaper, verbose } => commands::run::run(wallpaper.as_deref(), verbose),
         Command::Watch => commands::watch::watch(),
         Command::Set { path } => commands::set::set(&path),
         Command::Status => commands::set::status(),

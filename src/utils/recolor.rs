@@ -7,11 +7,11 @@ use akspraypaint::NoctaliaTheme;
 const SHARPNESS: f32 = 8.0;
 const EPSILON: f32 = 1e-6;
 
-pub fn recolor_wallpaper(input: &RgbImage, theme: &NoctaliaTheme) -> RgbImage {
+pub fn recolor_wallpaper(input: &RgbImage, theme: &NoctaliaTheme, verbose: bool) -> RgbImage {
     let mappings = match extract_wallpaper_theme(input) {
         Ok(source) => {
             eprintln!("Using matugen extraction for color mapping");
-            build_anchor_mappings(&source, theme)
+            build_anchor_mappings(&source, theme, verbose)
         }
         Err(e) => {
             eprintln!("Matugen failed ({}), using quantette k-means fallback", e);
@@ -129,7 +129,7 @@ fn parse_hex(hex: &str) -> Result<[u8; 3], String> {
     Ok([r, g, b])
 }
 
-fn build_anchor_mappings(source: &MatugenTheme, target: &NoctaliaTheme) -> Vec<(Oklch<f32>, Oklch<f32>)> {
+fn build_anchor_mappings(source: &MatugenTheme, target: &NoctaliaTheme, verbose: bool) -> Vec<(Oklch<f32>, Oklch<f32>)> {
     const LOW_CHROMA_THRESHOLD: f32 = 0.05;
 
     let target_colors: Vec<Oklch<f32>> = target.palette()
@@ -152,7 +152,7 @@ fn build_anchor_mappings(source: &MatugenTheme, target: &NoctaliaTheme) -> Vec<(
         (h >= 40.0 && h <= 180.0)
     }
 
-    slots.into_iter().map(|(_, src_rgb, target_rgb)| {
+    let mappings: Vec<_> = slots.into_iter().map(|(slot_name, src_rgb, target_rgb)| {
         let src_oklch = rgb_to_oklch(&Rgb(src_rgb));
         let target_oklch = rgb_to_oklch(&Rgb(target_rgb));
 
@@ -169,8 +169,16 @@ fn build_anchor_mappings(source: &MatugenTheme, target: &NoctaliaTheme) -> Vec<(
                 .unwrap_or(target_oklch)
         };
 
+        if verbose {
+            eprintln!("Source: {} | L:{:.3} C:{:.3} H:{:.1}°", slot_name, src_oklch.lightness, src_oklch.chroma, src_oklch.hue.into_positive_degrees());
+            eprintln!("Target: {} | L:{:.3} C:{:.3} H:{:.1}°", slot_name, target_oklch.lightness, target_oklch.chroma, target_oklch.hue.into_positive_degrees());
+            eprintln!("---");
+        }
+
         (src_oklch, mapped_target)
-    }).collect()
+    }).collect();
+
+    mappings
 }
 
 fn fallback_mappings(input: &RgbImage, theme: &NoctaliaTheme) -> Vec<(Oklch<f32>, Oklch<f32>)> {
