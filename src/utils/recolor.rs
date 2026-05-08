@@ -8,16 +8,11 @@ const SHARPNESS: f32 = 8.0;
 const EPSILON: f32 = 1e-6;
 
 pub fn recolor_wallpaper(input: &RgbImage, theme: &NoctaliaTheme, verbose: bool) -> RgbImage {
-    let mappings = match extract_wallpaper_theme(input) {
-        Ok(source) => {
-            eprintln!("Using matugen extraction for color mapping");
-            build_anchor_mappings(&source, theme, verbose)
-        }
-        Err(e) => {
-            eprintln!("Matugen failed ({}), using quantette k-means fallback", e);
-            fallback_mappings(input, theme)
-        }
-    };
+    let mappings = fallback_mappings(input, theme);
+
+    if verbose {
+        eprintln!("Using quantette k-means for color extraction");
+    }
 
     let (width, height) = input.dimensions();
     let mut output = RgbImage::new(width, height);
