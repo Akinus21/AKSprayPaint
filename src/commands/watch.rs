@@ -12,11 +12,24 @@ pub fn watch(wp_override: Option<&str>) -> Result<(), String> {
         .ok_or_else(|| "noctalia config directory not found".to_string())?;
 
     let wp_path = if let Some(path) = wp_override {
-        PathBuf::from(path)
+        let p = PathBuf::from(path);
+        eprintln!("Recoloring and setting wallpaper: {}", p.display());
+        let (_, theme_content) = theme::read_theme()?;
+        let hash = theme::theme_hash(&theme_content);
+
+        if let Some(cached) = crate::utils::cache::find_cached(&hash, &p) {
+            eprintln!("Using cached: {}", cached.display());
+            wallpaper::set_wallpaper(&cached)?;
+        } else {
+            eprintln!("Recoloring to match theme ({})...", hash);
+            crate::commands::run::apply_recolor(&p, &hash, false)?;
+        }
+        p
     } else {
         wallpaper::detect_wallpaper()
             .ok_or_else(|| "could not detect current wallpaper".to_string())?
     };
+
     eprintln!("Watching theme: {}", noctalia_dir.display());
     eprintln!("Current wallpaper: {}", wp_path.display());
     eprintln!("Daemon started with PID {}", std::process::id());
