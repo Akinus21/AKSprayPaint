@@ -130,7 +130,7 @@ fn parse_hex(hex: &str) -> Result<[u8; 3], String> {
 }
 
 fn build_anchor_mappings(source: &MatugenTheme, target: &NoctaliaTheme) -> Vec<(Oklch<f32>, Oklch<f32>)> {
-    const CHROMA_THRESHOLD: f32 = 0.20;
+    const LOW_CHROMA_THRESHOLD: f32 = 0.05;
 
     let target_colors: Vec<Oklch<f32>> = target.palette()
         .into_iter()
@@ -147,15 +147,22 @@ fn build_anchor_mappings(source: &MatugenTheme, target: &NoctaliaTheme) -> Vec<(
         ("error", source.error, target.error),
     ];
 
-slots.into_iter().map(|(_, src_rgb, target_rgb)| {
+    fn is_green_or_yellow(hue: OklabHue) -> bool {
+        let h = hue.into_positive_degrees();
+        (h >= 40.0 && h <= 180.0)
+    }
+
+    slots.into_iter().map(|(_, src_rgb, target_rgb)| {
         let src_oklch = rgb_to_oklch(&Rgb(src_rgb));
         let target_oklch = rgb_to_oklch(&Rgb(target_rgb));
 
-        let mapped_source = if src_oklch.chroma >= CHROMA_THRESHOLD {
+        let mapped_target = if src_oklch.chroma < LOW_CHROMA_THRESHOLD {
+            target_oklch
+        } else if is_green_or_yellow(src_oklch.hue) {
             target_colors.iter()
                 .min_by(|a, b| {
-                    let da = hue_dist(target_oklch.hue, a.hue);
-                    let db = hue_dist(target_oklch.hue, b.hue);
+                    let da = hue_dist(src_oklch.hue, a.hue);
+                    let db = hue_dist(src_oklch.hue, b.hue);
                     da.partial_cmp(&db).unwrap()
                 })
                 .copied()
@@ -164,7 +171,7 @@ slots.into_iter().map(|(_, src_rgb, target_rgb)| {
             target_oklch
         };
 
-        (mapped_source, src_oklch)
+        (src_oklch, mapped_target)
     }).collect()
 }
 
