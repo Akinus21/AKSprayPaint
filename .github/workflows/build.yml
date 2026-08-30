@@ -20,14 +20,14 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Build release binary
-        id: build
+      - name: Build akspraypaint
+        id: build_akspraypaint
         run: |
           set -o pipefail
           cargo build --release 2>&1 | tee build.log
 
-      - name: Verify binary size
-        id: verify
+      - name: Verify akspraypaint binary
+        id: verify_akspraypaint
         run: |
           BINARY=target/release/akspraypaint
           if [ ! -f "$BINARY" ]; then
@@ -41,11 +41,26 @@ jobs:
             exit 1
           fi
 
-      - name: Upload binary artifact
+      - name: Clone and build matugen
+        id: build_matugen
+        run: |
+          cd ..
+          git clone --depth 1 https://github.com/InioX/matugen.git
+          cd matugen
+          cargo build --release
+          if [ ! -f "target/release/matugen" ]; then
+            echo "Matugen binary not found!"
+            exit 1
+          fi
+          echo "Matugen built successfully"
+
+      - name: Upload both binaries
         uses: actions/upload-artifact@v4
         with:
           name: akspraypaint-binary
-          path: target/release/akspraypaint
+          path: |
+            target/release/akspraypaint
+            ../matugen/target/release/matugen
           if-no-files-found: error
 
       - name: Determine next tag
@@ -81,11 +96,13 @@ jobs:
           git tag ${{ steps.tag.outputs.new_tag }}
           git push origin ${{ steps.tag.outputs.new_tag }}
 
-      - name: Compute SHA256
+      - name: Compute SHA256 for both binaries
         id: sha
         run: |
-          SHA=$(sha256sum target/release/akspraypaint | awk '{print $1}')
-          echo "sha256=$SHA" >> $GITHUB_OUTPUT
+          SHA_AK=$(sha256sum target/release/akspraypaint | awk '{print $1}')
+          SHA_MATUGEN=$(sha256sum ../matugen/target/release/matugen | awk '{print $1}')
+          echo "sha256_akspraypaint=$SHA_AK" >> $GITHUB_OUTPUT
+          echo "sha256_matugen=$SHA_MATUGEN" >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release
         if: steps.tag.outputs.new_tag != ''
@@ -97,7 +114,8 @@ jobs:
           gh release create "$TAG" \
             --title "$TAG" \
             --notes "Automated release of $TAG" \
-            target/release/akspraypaint
+            target/release/akspraypaint \
+            ../matugen/target/release/matugen
 
       - name: Update Homebrew tap
         if: steps.tag.outputs.new_tag != ''
@@ -107,13 +125,27 @@ jobs:
           set -e
           TAG=${{ steps.tag.outputs.new_tag }}
           VER=${TAG#v}
-          SHA=${{ steps.sha.outputs.sha256 }}
-          REPO_URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/akspraypaint"
+          SHA_AK=${{ steps.sha.outputs.sha256_akspraypaint }}
+          REPO_URL="https://github.com/${{ github.repository }}/releases/download/${TAG}"
           git clone https://x-access-token:${TAP_TOKEN}@github.com/Akinus21/homebrew-tap.git tap-repo
           cd tap-repo
           FORMULA_PATH="Formula/akspraypaint.rb"
-          printf 'class Akspraypaint < Formula\n  desc "AKSprayPaint command line utility"\n  homepage "https://github.com/%s"\n  url "%s"\n  sha256 "%s"\n  version "%s"\n  license "MIT"\n\n  def install\n    bin.install "akspraypaint"\n  end\nend\n' \
-            "${{ github.repository }}" "$REPO_URL" "$SHA" "$VER" > $FORMULA_PATH
+          cat > $FORMULA_PATH << FORMULA_EOF
+class Akspraypaint < Formula
+  desc "AKSprayPaint command line utility"
+  homepage "https://github.com/Akinus21/AKSprayPaint"
+  url "${REPO_URL}/akspraypaint"
+  sha256 "${SHA_AK}"
+  version "${VER}"
+  license "MIT"
+
+  def install
+    bin.install "akspraypaint"
+    system "curl -sL ${REPO_URL}/matugen -o #{bin}/matugen"
+    chmod "+x", "#{bin}/matugen"
+  end
+end
+FORMULA_EOF
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add $FORMULA_PATH
