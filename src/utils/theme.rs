@@ -18,7 +18,14 @@ pub fn v5_state_dir() -> Option<PathBuf> {
         .ok()
         .map(PathBuf::from)
         .or_else(|| {
-            let state = dirs::data_local_dir()?;
+            // dirs::state_dir() resolves $XDG_STATE_HOME (~/.local/state
+            // on Linux) — NOT dirs::data_local_dir(), which resolves
+            // $XDG_DATA_HOME (~/.local/share) instead. Using the wrong
+            // one here silently pointed at the wrong directory whenever
+            // NOCTALIA_STATE_HOME wasn't explicitly set, which broke
+            // both the file-watch (never added, since the wrong path
+            // failed the is_dir() check below) and the theme-file reads.
+            let state = dirs::state_dir()?;
             Some(state.join("noctalia"))
         })?;
     if state_dir.is_dir() {
