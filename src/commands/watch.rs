@@ -5,6 +5,21 @@ use std::time::{Duration, Instant};
 
 const DEBOUNCE_MS: u64 = 500;
 
+fn v5_state_dir() -> Option<PathBuf> {
+    let state_dir = std::env::var("NOCTALIA_STATE_HOME")
+        .ok()
+        .map(PathBuf::from)
+        .or_else(|| {
+            let state = dirs::data_local_dir()?;
+            Some(state.join("noctalia"))
+        })?;
+    if state_dir.is_dir() {
+        Some(state_dir)
+    } else {
+        None
+    }
+}
+
 pub fn watch(wp_override: Option<&str>) -> Result<(), String> {
     daemon::write_pid()?;
 
@@ -36,6 +51,7 @@ pub fn watch(wp_override: Option<&str>) -> Result<(), String> {
 
     let mut inotify =
         Inotify::init().map_err(|e| format!("failed to init inotify: {}", e))?;
+
     inotify
         .watches()
         .add(
@@ -46,6 +62,19 @@ pub fn watch(wp_override: Option<&str>) -> Result<(), String> {
                 | WatchMask::DELETE,
         )
         .map_err(|e| format!("failed to watch directory: {}", e))?;
+
+    if let Some(state_dir) = v5_state_dir() {
+        inotify
+            .watches()
+            .add(
+                &state_dir,
+                WatchMask::CLOSE_WRITE
+                    | WatchMask::MOVED_TO
+                    | WatchMask::MOVED_FROM
+                    | WatchMask::DELETE,
+            )
+            .map_err(|e| format!("failed to watch state directory: {}", e))?;
+    }
 
     let mut buffer = [0u8; 4096];
     let mut last_event = Instant::now()
@@ -63,7 +92,10 @@ pub fn watch(wp_override: Option<&str>) -> Result<(), String> {
                 continue;
             }
             if let Some(name) = event.name {
-                if name == "colors.json" {
+                let name_str = name.to_string_lossy();
+                if name_str == "colors.json" || name_str.ends_with(".json") {
+                    colors_changed = true;
+                } else if name_str == "settings.toml" {
                     colors_changed = true;
                 }
             }
