@@ -32,6 +32,49 @@ pub fn recolor_wallpaper(input: &RgbImage, theme: &NoctaliaTheme, verbose: bool)
     output
 }
 
+/// Resolves the actual matugen binary to invoke, rather than relying on
+/// bare PATH lookup. Confirmed root cause of a real bug: a bare
+/// `Command::new("matugen")` resolves differently depending on the
+/// calling process's PATH — a plugin-spawned subprocess (via Noctalia's
+/// runAsync) can have a different PATH than an interactive shell, and if
+/// matugen isn't found there at all, extract_wallpaper_theme() fails and
+/// recolor_wallpaper() silently falls back to a different, lower-quality
+/// algorithm — with no visible error anywhere in the UI. Consistently
+/// worse output from the plugin than from a manual shell run, despite
+/// identical theme/wallpaper/akspraypaint binary, is exactly what that
+/// looks like.
+///
+/// Checked in order:
+/// 1. Alongside akspraypaint's own running executable — CI bundles
+///    matugen in the same directory at release time, so this is the
+///    most reliable source of the actually-intended binary.
+/// 2. Known Homebrew install locations (matching the same list
+///    watcher.luau already uses for finding akspraypaint itself).
+/// 3. Bare "matugen" via PATH, as a last resort (dev/cargo-run builds
+///    without a bundled sibling).
+fn matugen_binary() -> String {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let sibling = dir.join("matugen");
+            if sibling.is_file() {
+                return sibling.to_string_lossy().to_string();
+            }
+        }
+    }
+
+    for candidate in [
+        "/opt/homebrew/bin/matugen",
+        "/usr/local/bin/matugen",
+        "/home/linuxbrew/.linuxbrew/bin/matugen",
+    ] {
+        if std::path::Path::new(candidate).is_file() {
+            return candidate.to_string();
+        }
+    }
+
+    "matugen".to_string()
+}
+
 fn extract_wallpaper_theme(input: &RgbImage, target: &NoctaliaTheme) -> Result<MatugenTheme, String> {
     let mut buf = std::io::Cursor::new(Vec::new());
     input.write_to(&mut buf, image::ImageFormat::Png)
@@ -41,12 +84,13 @@ fn extract_wallpaper_theme(input: &RgbImage, target: &NoctaliaTheme) -> Result<M
     std::fs::write(&tmp_path, buf.get_ref())
         .map_err(|e| format!("failed to write temp image: {}", e))?;
 
+    let matugen = matugen_binary();
     let mut extracted_colors: Vec<Vec<[u8; 3]>> = Vec::new();
     for idx in 0..7 {
-        let output = std::process::Command::new("matugen")
+        let output = std::process::Command::new(&matugen)
             .args(["image", &tmp_path.to_string_lossy(), "--json", "hex", "--source-color-index", &idx.to_string()])
             .output()
-            .map_err(|e| format!("matugen failed to start: {}", e))?;
+            .map_err(|e| format!("matugen ({}) failed to start: {}", matugen, e))?;
 
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout).to_string();
