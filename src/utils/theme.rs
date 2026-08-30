@@ -13,7 +13,7 @@ fn v4_theme_path() -> Option<PathBuf> {
     }
 }
 
-fn v5_active_palette_name() -> Option<String> {
+pub fn v5_state_dir() -> Option<PathBuf> {
     let state_dir = std::env::var("NOCTALIA_STATE_HOME")
         .ok()
         .map(PathBuf::from)
@@ -21,36 +21,86 @@ fn v5_active_palette_name() -> Option<String> {
             let state = dirs::data_local_dir()?;
             Some(state.join("noctalia"))
         })?;
-    let settings_path = state_dir.join("settings.toml");
-    if !settings_path.exists() {
+    if state_dir.is_dir() {
+        Some(state_dir)
+    } else {
+        None
+    }
+}
+
+/// Asks the running Noctalia shell what's actually active right now,
+/// via its own IPC — ground truth, straight from the source, rather
+/// than independently re-parsing settings.toml and risking drift from
+/// whatever Noctalia itself considers current.
+///
+/// `noctalia msg color-scheme-get` (no arguments) prints `<source>
+/// <name>` for the currently active scheme, e.g. `custom Purple Haze`.
+/// Names can contain spaces, so only the first token is the source —
+/// everything after it, trimmed, is the name.
+fn active_color_scheme() -> Option<(String, String)> {
+    let output = std::process::Command::new("noctalia")
+        .args(["msg", "color-scheme-get"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
         return None;
     }
-    let content = std::fs::read_to_string(&settings_path).ok()?;
-    for line in content.lines() {
-        let line = line.trim();
-        if line.starts_with("custom_palette") && line.contains('=') {
-            if let Some(name) = line.split('=').nth(1) {
-                let name = name.trim().trim_matches('"').trim_matches('\'');
-                if !name.is_empty() {
-                    return Some(name.to_string());
-                }
-            }
-        }
+    let text = String::from_utf8(output.stdout).ok()?;
+    let text = text.trim();
+    let mut parts = text.splitn(2, ' ');
+    let source = parts.next()?.trim().to_string();
+    let name = parts.next()?.trim().to_string();
+    if source.is_empty() || name.is_empty() {
+        return None;
     }
-    None
+    Some((source, name))
 }
 
 fn v5_theme_path() -> Option<PathBuf> {
-    let palette_name = v5_active_palette_name()?;
-    let config = dirs::config_dir()?;
-    let path = config
-        .join("noctalia")
-        .join("palettes")
-        .join(format!("{}.json", palette_name));
-    if path.exists() {
-        Some(path)
-    } else {
-        None
+    let (source, name) = active_color_scheme()?;
+
+    match source.as_str() {
+        "custom" => {
+            let config = dirs::config_dir()?;
+            let path = config.join("noctalia").join("palettes").join(format!("{}.json", name));
+            if path.exists() {
+                Some(path)
+            } else {
+                None
+            }
+        }
+        "community" => {
+            // Observed filenames use literal %20 for spaces (e.g.
+            // "Ayu%20Green.json"), not a real space character — matches
+            // how the shell saves palettes downloaded by URL-encoded
+            // name. Only spaces are handled here since that's the only
+            // special character actually observed; if a palette name
+            // ever contains something else unusual, this will need
+            // broader encoding.
+            let encoded_name = name.replace(' ', "%20");
+            let path = v5_state_dir()?
+                .join("community-palettes")
+                .join(format!("{}.json", encoded_name));
+            if path.exists() {
+                Some(path)
+            } else {
+                None
+            }
+        }
+        // "builtin" — no reliable source for these colors has been
+        // found. The obvious candidates were checked and ruled out:
+        // api.noctalia.dev/palette/<name> only serves community
+        // palettes (confirmed: returns "Palette not found" for a
+        // builtin name), and the old v4 Quickshell build's bundled
+        // JSON assets live under an OSTree deployment-hash-specific
+        // path that isn't guaranteed to stick around. Deliberately
+        // unimplemented rather than pointing at something fragile or
+        // wrong — see the source-aware error in read_theme() below.
+        //
+        // "wallpaper" (M3 extraction from the current wallpaper) also
+        // has no static palette file to read — it's generated, not
+        // stored — so it falls into the same catch-all.
+        _ => None,
     }
 }
 
@@ -60,7 +110,24 @@ pub fn theme_config_path() -> Option<PathBuf> {
 
 pub fn read_theme() -> Result<(NoctaliaTheme, String), String> {
     let path = theme_config_path().ok_or_else(|| {
-        "noctalia colors.json not found at ~/.config/noctalia/colors.json".to_string()
+        match active_color_scheme() {
+            Some((source, name)) if source == "builtin" => format!(
+                "builtin color scheme '{}' is not yet supported — no reliable local source for \
+                 builtin palette colors has been found (the community API only serves community \
+                 palettes, and the old v4 bundled assets aren't a stable path to rely on). Switch \
+                 to a custom or community palette for now, or track down where builtin colors \
+                 actually live and this can be added.",
+                name
+            ),
+            Some((source, name)) => format!(
+                "could not find a palette file for source '{}', name '{}' — check it exists in \
+                 the expected location for that source",
+                source, name
+            ),
+            None => "noctalia colors.json not found at ~/.config/noctalia/colors.json, and \
+                     `noctalia msg color-scheme-get` did not return a usable result"
+                .to_string(),
+        }
     })?;
     let content =
         std::fs::read_to_string(&path).map_err(|e| format!("failed to read theme: {}", e))?;

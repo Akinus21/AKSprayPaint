@@ -5,21 +5,6 @@ use std::time::{Duration, Instant};
 
 const DEBOUNCE_MS: u64 = 500;
 
-fn v5_state_dir() -> Option<PathBuf> {
-    let state_dir = std::env::var("NOCTALIA_STATE_HOME")
-        .ok()
-        .map(PathBuf::from)
-        .or_else(|| {
-            let state = dirs::data_local_dir()?;
-            Some(state.join("noctalia"))
-        })?;
-    if state_dir.is_dir() {
-        Some(state_dir)
-    } else {
-        None
-    }
-}
-
 pub fn watch(wp_override: Option<&str>) -> Result<(), String> {
     daemon::write_pid()?;
 
@@ -63,7 +48,7 @@ pub fn watch(wp_override: Option<&str>) -> Result<(), String> {
         )
         .map_err(|e| format!("failed to watch directory: {}", e))?;
 
-    if let Some(state_dir) = v5_state_dir() {
+    if let Some(state_dir) = theme::v5_state_dir() {
         inotify
             .watches()
             .add(
