@@ -133,7 +133,7 @@ jobs:
           git clone https://x-access-token:${TAP_TOKEN}@github.com/Akinus21/homebrew-tap.git tap-repo
           cd tap-repo
           FORMULA_PATH="Formula/akspraypaint.rb"
-          cat > $FORMULA_PATH <<-'FORMULA_EOF'
+          cat > $FORMULA_PATH <<-'RUBY_EOF'
 class Akspraypaint < Formula
   desc "AKSprayPaint command line utility"
   homepage "https://github.com/Akinus21/AKSprayPaint"
@@ -148,7 +148,7 @@ class Akspraypaint < Formula
     chmod "+x", "#{bin}/matugen"
   end
 end
-FORMULA_EOF
+RUBY_EOF
           sed -i "s|REPO_URL|${REPO_URL}|g" $FORMULA_PATH
           sed -i "s|SHA_AK|${SHA_AK}|g" $FORMULA_PATH
           sed -i "s|VER|${VER}|g" $FORMULA_PATH
