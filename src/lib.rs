@@ -41,7 +41,7 @@ impl NoctaliaTheme {
 }
 
 #[derive(Debug, Deserialize)]
-struct RawColors {
+struct RawColorsFlat {
     #[serde(rename = "mPrimary")]
     primary: Option<String>,
     #[serde(rename = "mOnPrimary")]
@@ -56,6 +56,12 @@ struct RawColors {
     on_surface_variant: Option<String>,
     #[serde(rename = "mError")]
     error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawColorsV5 {
+    dark: Option<RawColorsFlat>,
+    light: Option<RawColorsFlat>,
 }
 
 fn parse_hex_color(hex: &str) -> Option<[u8; 3]> {
@@ -79,8 +85,7 @@ fn parse_hex_color(hex: &str) -> Option<[u8; 3]> {
     Some([r, g, b])
 }
 
-pub fn parse_theme(content: &str) -> Option<NoctaliaTheme> {
-    let raw: RawColors = serde_json::from_str(content).ok()?;
+fn colors_from_raw(raw: &RawColorsFlat) -> Option<NoctaliaTheme> {
     Some(NoctaliaTheme {
         primary: parse_hex_color(raw.primary.as_deref()?)?,
         on_primary: parse_hex_color(raw.on_primary.as_deref()?)?,
@@ -90,4 +95,25 @@ pub fn parse_theme(content: &str) -> Option<NoctaliaTheme> {
         on_surface_variant: parse_hex_color(raw.on_surface_variant.as_deref()?)?,
         error: parse_hex_color(raw.error.as_deref()?)?,
     })
+}
+
+pub fn parse_theme(content: &str) -> Option<NoctaliaTheme> {
+    if let Ok(v5) = serde_json::from_str::<RawColorsV5>(content) {
+        if let Some(ref dark) = v5.dark {
+            if let Some(theme) = colors_from_raw(dark) {
+                return Some(theme);
+            }
+        }
+        if let Some(ref light) = v5.light {
+            if let Some(theme) = colors_from_raw(light) {
+                return Some(theme);
+            }
+        }
+    }
+
+    if let Ok(flat) = serde_json::from_str::<RawColorsFlat>(content) {
+        return colors_from_raw(&flat);
+    }
+
+    None
 }
