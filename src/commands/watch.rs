@@ -48,19 +48,6 @@ pub fn watch(wp_override: Option<&str>) -> Result<(), String> {
         )
         .map_err(|e| format!("failed to watch directory: {}", e))?;
 
-    if let Some(state_dir) = theme::v5_state_dir() {
-        inotify
-            .watches()
-            .add(
-                &state_dir,
-                WatchMask::CLOSE_WRITE
-                    | WatchMask::MOVED_TO
-                    | WatchMask::MOVED_FROM
-                    | WatchMask::DELETE,
-            )
-            .map_err(|e| format!("failed to watch state directory: {}", e))?;
-    }
-
     let mut buffer = [0u8; 4096];
     let mut last_event = Instant::now()
         .checked_sub(Duration::from_secs(60))
@@ -79,8 +66,6 @@ pub fn watch(wp_override: Option<&str>) -> Result<(), String> {
             if let Some(name) = event.name {
                 let name_str = name.to_string_lossy();
                 if name_str == "colors.json" || name_str.ends_with(".json") {
-                    colors_changed = true;
-                } else if name_str == "settings.toml" {
                     colors_changed = true;
                 }
             }
