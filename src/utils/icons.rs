@@ -66,8 +66,8 @@ pub fn get_active_icon_theme() -> Option<String> {
 
 /// Pick the best available icon theme to use as the source for recoloring.
 /// Noctalia is always preferred if installed (it's the canonical source theme).
-/// Otherwise falls back to the currently-active gsettings theme, Adwaita,
-/// or the first theme found on disk.
+/// Otherwise falls back to the currently-active gsettings theme, then Adwaita
+/// (which covers Adwaita, Adwaita-dark, and other variants on disk).
 pub fn find_best_base_theme() -> String {
     // Noctalia is the canonical source — use it if present
     if find_icon_theme_root("Noctalia").is_some() {
@@ -81,34 +81,7 @@ pub fn find_best_base_theme() -> String {
             return active;
         }
     }
-    // Fall back to Adwaita if installed
-    if find_icon_theme_root("Adwaita").is_some() {
-        return "Adwaita".to_string();
-    }
-    // Last resort: first theme found on disk
-    let search_dirs: Vec<std::path::PathBuf> = std::iter::empty()
-        .chain(dirs::data_dir().map(|p| p.join("icons")))
-        .chain(
-            ["/usr/share/icons", "/usr/local/share/icons"]
-                .iter()
-                .map(std::path::PathBuf::from),
-        )
-        .filter_map(|p| if p.exists() { Some(p) } else { None })
-        .collect();
-
-    for dir in search_dirs {
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            for entry in entries.flatten() {
-                if entry.path().is_dir() {
-                    if let Some(name) = entry.path().file_name().and_then(|n| n.to_str()) {
-                        if name != "icons" && name != "CursorThemes" {
-                            return name.to_string();
-                        }
-                    }
-                }
-            }
-        }
-    }
+    // Adwaita covers Adwaita, Adwaita-dark, etc.
     "Adwaita".to_string()
 }
 
