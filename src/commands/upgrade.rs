@@ -25,13 +25,18 @@ pub fn upgrade() -> Result<(), String> {
         .output()
         .map_err(|e| format!("failed to run brew upgrade: {}", e))?;
 
+    let stdout = String::from_utf8_lossy(&upgrade.stdout);
+    let stderr = String::from_utf8_lossy(&upgrade.stderr);
+
     if !upgrade.status.success() {
-        let stderr = String::from_utf8_lossy(&upgrade.stderr);
-        return Err(format!("brew upgrade failed: {}", stderr));
+        return Err(format!("brew upgrade failed:\n{}{}", stdout, stderr));
     }
 
-    let stdout = String::from_utf8_lossy(&upgrade.stdout);
-    if !stdout.trim().is_empty() {
+    if stdout.contains("Upgraded 1") {
+        println!("Upgraded akspraypaint successfully.");
+    } else if stdout.contains("Already up-to-date") {
+        // silent
+    } else if !stdout.is_empty() {
         println!("{}", stdout.trim());
     }
 
