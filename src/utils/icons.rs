@@ -68,6 +68,8 @@ fn extract_toml_string(content: &str, key: &str) -> Option<String> {
 // --------------------------------------------------------------------------
 
 /// Find the root directory of an installed icon theme by name.
+/// When multiple installs exist (e.g. Adwaita in both ~/.local and /usr/share),
+/// prefers the one with actual icon files over an empty placeholder.
 pub fn find_icon_theme_root(name: &str) -> Option<PathBuf> {
     let search_dirs: Vec<PathBuf> = std::iter::empty()
         .chain(dirs::data_dir().map(|p| p.join("icons")))
@@ -75,17 +77,78 @@ pub fn find_icon_theme_root(name: &str) -> Option<PathBuf> {
         .filter_map(|p| if p.exists() { Some(p) } else { None })
         .collect();
 
+    let mut best: Option<(PathBuf, bool)> = None;
+
     for dir in search_dirs {
         let candidate = dir.join(name);
-        if candidate.is_dir()
-        && (candidate.join("index.theme").exists()
-            || candidate.join("16x16").is_dir()
-            || candidate.join("scalable").is_dir())
-        {
-            return Some(candidate);
+        if !candidate.is_dir() {
+            continue;
+        }
+        let has_index = candidate.join("index.theme").exists();
+        let has_size_dirs = candidate.join("16x16").is_dir()
+            || candidate.join("scalable").is_dir()
+            || candidate.join("symbolic").is_dir();
+
+        if !has_index && !has_size_dirs {
+            continue;
+        }
+
+        let has_content = check_theme_has_icons(&candidate);
+        let is_local = dir.to_string_lossy().contains(".local");
+
+        let should_replace = match &best {
+            None => true,
+            Some((_, existing_has_content)) => {
+                has_content && !*existing_has_content
+                    || (has_content == *existing_has_content && is_local)
+            }
+        };
+        if should_replace {
+            best = Some((candidate, has_content));
         }
     }
-    None
+
+    best.map(|(p, _)| p)
+}
+
+/// Check if an icon theme directory has actual icon files.
+fn check_theme_has_icons(path: &Path) -> bool {
+    // Check scalable subdirs
+    let scalable = path.join("scalable");
+    if scalable.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(&scalable) {
+            for entry in entries.flatten() {
+                let sub = entry.path();
+                if sub.is_dir() {
+                    if let Ok(sub_entries) = std::fs::read_dir(&sub) {
+                        for se in sub_entries.flatten() {
+                            if se.path().extension().and_then(|e| e.to_str()) == Some("svg") {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Check size dirs (16x16, 24x24, etc.)
+    for size in &["16x16", "24x24", "32x32", "48x48", "64x64", "128x128", "256x256"] {
+        let size_dir = path.join(size);
+        if size_dir.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&size_dir) {
+                for entry in entries.flatten() {
+                    if let Some(ext) = entry.path().extension().and_then(|e| e.to_str()) {
+                        if ext == "svg" || ext == "png" || ext == "jpg" {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    false
 }
 
 /// Find the currently active system icon theme via gsettings.
