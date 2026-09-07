@@ -619,10 +619,12 @@ fn recolor_svg_icon(
 
     let mappings = build_svg_anchor_mappings(&palette, theme_data);
     if mappings.is_empty() {
+        eprintln!("  DEBUG: no mappings (palette had {} colors, theme has 7 anchors)", palette.len());
         return copy_icon_as_is(src, output_dir);
     }
 
     if verbose {
+        eprintln!("  DEBUG: source palette: {:?}", palette);
         for (src_hex, tgt_hex) in &mappings {
             eprintln!("  {} → {}", src_hex, tgt_hex);
         }
