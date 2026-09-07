@@ -28,8 +28,8 @@ pub fn apply_niri_colors() -> Result<(), String> {
     let content = std::fs::read_to_string(&colors_path)
         .map_err(|e| format!("reading {}: {}", colors_path.display(), e))?;
 
-    let json: serde_json::Value = serde_json::from_str(&content)
-        .map_err(|e| format!("parsing colors.json: {}", e))?;
+    let json: serde_json::Value =
+        serde_json::from_str(&content).map_err(|e| format!("parsing colors.json: {}", e))?;
 
     let get_hex = |key: &str| -> Result<String, String> {
         json.get(key)
@@ -51,8 +51,8 @@ pub fn apply_niri_colors() -> Result<(), String> {
         primary_alpha: format!("{}80", primary),
     };
 
-    let theme_name = crate::utils::icons::get_current_theme_name()
-        .unwrap_or_else(|_| "Unknown".to_string());
+    let theme_name =
+        crate::utils::icons::get_current_theme_name().unwrap_or_else(|_| "Unknown".to_string());
 
     apply_niri_theme(&theme_name, &niri_colors)
 }
@@ -65,12 +65,10 @@ pub fn apply_niri_theme(theme_name: &str, colors: &NoctaliaNiriColors) -> Result
 
     // Ensure parent directory exists
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("creating niri config dir: {}", e))?;
+        std::fs::create_dir_all(parent).map_err(|e| format!("creating niri config dir: {}", e))?;
     }
 
-    std::fs::write(&path, content)
-        .map_err(|e| format!("writing {}: {}", path.display(), e))?;
+    std::fs::write(&path, content).map_err(|e| format!("writing {}: {}", path.display(), e))?;
 
     reload_niri_config()
 }
@@ -123,7 +121,12 @@ pub struct NoctaliaNiriColors {
 
 impl NoctaliaNiriColors {
     #[allow(dead_code)]
-    pub fn from_noctalia_colors(primary: &str, surface: &str, surface_variant: &str, urgent: &str) -> Self {
+    pub fn from_noctalia_colors(
+        primary: &str,
+        surface: &str,
+        surface_variant: &str,
+        urgent: &str,
+    ) -> Self {
         // Add ~80% alpha to primary for insert-hint
         let primary_alpha = format!("{}80", primary.trim_start_matches('#'));
         Self {

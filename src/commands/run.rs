@@ -17,7 +17,10 @@ pub fn run(wp_override: Option<&str>, verbose: bool, no_cache: bool) -> Result<(
         eprintln!("Recoloring wallpaper to match theme ({})...", hash);
         apply_recolor(&wp_path, &hash, verbose)
     } else if let Some(cached_path) = cache::find_cached(&hash, &wp_path) {
-        eprintln!("Using cached recolored wallpaper: {}", cached_path.display());
+        eprintln!(
+            "Using cached recolored wallpaper: {}",
+            cached_path.display()
+        );
         wallpaper::set_wallpaper(&cached_path)
     } else {
         eprintln!("Recoloring wallpaper to match theme ({})...", hash);
@@ -27,8 +30,7 @@ pub fn run(wp_override: Option<&str>, verbose: bool, no_cache: bool) -> Result<(
 }
 
 pub fn apply_recolor(wp_path: &std::path::Path, hash: &str, verbose: bool) -> Result<(), String> {
-    let img = image::open(wp_path)
-        .map_err(|e| format!("failed to load image: {}", e))?;
+    let img = image::open(wp_path).map_err(|e| format!("failed to load image: {}", e))?;
     let rgb_img = img.to_rgb8();
 
     let (theme_data, _) = theme::read_theme()?;

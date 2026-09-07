@@ -4,7 +4,10 @@ mod utils;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "akspraypaint", about = "Recolors wallpaper and icons to match the noctalia theme")]
+#[command(
+    name = "akspraypaint",
+    about = "Recolors wallpaper and icons to match the noctalia theme"
+)]
 struct Cli {
     #[arg(long, help = "Kill the running watch daemon")]
     disable: bool,
@@ -86,9 +89,11 @@ fn main() {
     };
 
     let result = match command {
-        Command::Run { wallpaper, verbose, no_cache } => {
-            commands::run::run(wallpaper.as_deref(), verbose, no_cache)
-        }
+        Command::Run {
+            wallpaper,
+            verbose,
+            no_cache,
+        } => commands::run::run(wallpaper.as_deref(), verbose, no_cache),
         Command::Watch { wallpaper } => commands::watch::watch(wallpaper.as_deref()),
         Command::Icons { sub } => match sub {
             IconsSubcommand::Recolor { verbose } => commands::icons::recolor(verbose),

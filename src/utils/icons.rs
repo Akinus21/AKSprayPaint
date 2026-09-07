@@ -1,14 +1,14 @@
+use std::io::Cursor;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
-use std::io::Cursor;
 
+use quick_xml::events::{BytesStart, Event};
 use quick_xml::Reader;
 use quick_xml::Writer;
-use quick_xml::events::{Event, BytesStart};
 
-use akspraypaint::{NoctaliaTheme, parse_theme};
 use crate::utils::theme;
+use akspraypaint::{parse_theme, NoctaliaTheme};
 
 // --------------------------------------------------------------------------
 // Theme name resolution
@@ -17,14 +17,14 @@ use crate::utils::theme;
 /// Read the current Noctalia theme name from settings.toml.
 /// Resolves the `source` field to find which key holds the active theme name.
 pub fn get_current_theme_name() -> Result<String, String> {
-    let state_dir = theme::noctalia_state_dir()
-        .ok_or_else(|| "noctalia state directory not found (~/.local/state/noctalia)".to_string())?;
+    let state_dir = theme::noctalia_state_dir().ok_or_else(|| {
+        "noctalia state directory not found (~/.local/state/noctalia)".to_string()
+    })?;
     let settings_path = state_dir.join("settings.toml");
     let content = std::fs::read_to_string(&settings_path)
         .map_err(|e| format!("failed to read settings.toml: {}", e))?;
 
-    let source = extract_toml_string(&content, "source")
-        .unwrap_or_else(|| "custom".to_string());
+    let source = extract_toml_string(&content, "source").unwrap_or_else(|| "custom".to_string());
 
     let theme_name = match source.as_str() {
         "builtin" => extract_toml_string(&content, "builtin"),
@@ -35,10 +35,7 @@ pub fn get_current_theme_name() -> Result<String, String> {
     .unwrap_or_else(|| "Custom".to_string());
 
     // Convert "Purple Haze" → "Purple_Haze" for use as folder/icon-theme name
-    let sanitized = theme_name
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join("_");
+    let sanitized = theme_name.split_whitespace().collect::<Vec<_>>().join("_");
 
     Ok(sanitized)
 }
@@ -73,7 +70,11 @@ fn extract_toml_string(content: &str, key: &str) -> Option<String> {
 pub fn find_icon_theme_root(name: &str) -> Option<PathBuf> {
     let search_dirs: Vec<PathBuf> = std::iter::empty()
         .chain(dirs::data_dir().map(|p| p.join("icons")))
-        .chain(["/usr/share/icons", "/usr/local/share/icons"].iter().map(PathBuf::from))
+        .chain(
+            ["/usr/share/icons", "/usr/local/share/icons"]
+                .iter()
+                .map(PathBuf::from),
+        )
         .filter_map(|p| if p.exists() { Some(p) } else { None })
         .collect();
 
@@ -155,9 +156,7 @@ pub(crate) fn find_best_base_theme() -> String {
     }
     if let Some(active) = get_active_icon_theme() {
         // Skip if the active theme IS a recolored output (not a real source)
-        if !is_recolored_output(&active)
-            && find_icon_theme_root(&active).is_some()
-        {
+        if !is_recolored_output(&active) && find_icon_theme_root(&active).is_some() {
             return active;
         }
     }
@@ -186,9 +185,16 @@ fn find_icon_theme_root_at(path: &str) -> Option<PathBuf> {
 /// Eldritch, custom theme names — not system themes like Adwaita).
 fn is_recolored_output(name: &str) -> bool {
     let skip = [
-        "Adwaita", "Adwaita-dark", "Adwaita-light",
-        "Noctalia", "hicolor", "Humanity", "gnome", "oxygen",
-        "Papirus", "Papirus-Dark",
+        "Adwaita",
+        "Adwaita-dark",
+        "Adwaita-light",
+        "Noctalia",
+        "hicolor",
+        "Humanity",
+        "gnome",
+        "oxygen",
+        "Papirus",
+        "Papirus-Dark",
     ];
     !skip.contains(&name)
         && (name.contains('_')
@@ -278,9 +284,7 @@ pub fn recolor_icons(theme_name: &str, verbose: bool) -> Result<String, String> 
         );
         eprintln!(
             "  on_primary:  #{:02x}{:02x}{:02x}",
-            theme_data.on_primary[0],
-            theme_data.on_primary[1],
-            theme_data.on_primary[2]
+            theme_data.on_primary[0], theme_data.on_primary[1], theme_data.on_primary[2]
         );
         eprintln!(
             "  surface:      #{:02x}{:02x}{:02x}",
@@ -346,9 +350,7 @@ pub fn recolor_icons(theme_name: &str, verbose: bool) -> Result<String, String> 
 
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_symlink()
-                || path.extension().and_then(|e| e.to_str()) != Some("svg")
-            {
+            if path.is_symlink() || path.extension().and_then(|e| e.to_str()) != Some("svg") {
                 continue;
             }
             let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
@@ -457,7 +459,11 @@ fn extract_svg_palette(svg_bytes: &[u8]) -> Result<Vec<String>, String> {
                     if key == "fill" || key == "stroke" || key == "stop-color" {
                         if let Ok(val) = attr.unescape_value() {
                             let s = val.as_ref();
-                            if !s.is_empty() && s != "none" && s != "transparent" && s != "currentColor" {
+                            if !s.is_empty()
+                                && s != "none"
+                                && s != "transparent"
+                                && s != "currentColor"
+                            {
                                 hex_colors.push(s.to_string());
                             }
                         }
@@ -520,7 +526,11 @@ fn parse_svg_color(s: &str) -> Option<[u8; 3]> {
 use palette::{FromColor, IntoColor, OklabHue, Oklch, Srgb};
 
 fn rgb_to_oklch(rgb: [u8; 3]) -> Oklch<f32> {
-    let s = Srgb::new(rgb[0] as f32 / 255.0, rgb[1] as f32 / 255.0, rgb[2] as f32 / 255.0);
+    let s = Srgb::new(
+        rgb[0] as f32 / 255.0,
+        rgb[1] as f32 / 255.0,
+        rgb[2] as f32 / 255.0,
+    );
     Oklch::from_color(s.into_linear())
 }
 
@@ -555,8 +565,14 @@ fn build_svg_anchor_mappings(
         (rgb_to_oklch(theme_data.on_primary), theme_data.on_primary),
         (rgb_to_oklch(theme_data.surface), theme_data.surface),
         (rgb_to_oklch(theme_data.on_surface), theme_data.on_surface),
-        (rgb_to_oklch(theme_data.surface_variant), theme_data.surface_variant),
-        (rgb_to_oklch(theme_data.on_surface_variant), theme_data.on_surface_variant),
+        (
+            rgb_to_oklch(theme_data.surface_variant),
+            theme_data.surface_variant,
+        ),
+        (
+            rgb_to_oklch(theme_data.on_surface_variant),
+            theme_data.on_surface_variant,
+        ),
         (rgb_to_oklch(theme_data.error), theme_data.error),
     ];
 
@@ -624,11 +640,9 @@ fn recolor_svg_icon(
         .and_then(|p| p.file_name())
         .unwrap_or(".".as_ref());
     let out_dir = output_dir.join(size_dir);
-    std::fs::create_dir_all(&out_dir)
-        .map_err(|e| format!("failed to create dir: {}", e))?;
+    std::fs::create_dir_all(&out_dir).map_err(|e| format!("failed to create dir: {}", e))?;
     let out_path = out_dir.join(name);
-    std::fs::write(&out_path, recolored)
-        .map_err(|e| format!("failed to write: {}", e))?;
+    std::fs::write(&out_path, recolored).map_err(|e| format!("failed to write: {}", e))?;
 
     Ok(out_path)
 }
@@ -677,7 +691,9 @@ fn transfer_svg_colors(
                 break;
             }
             Ok(e) => {
-                writer.write_event(e).map_err(|e| format!("SVG write error: {}", e))?;
+                writer
+                    .write_event(e)
+                    .map_err(|e| format!("SVG write error: {}", e))?;
             }
             Err(e) => return Err(format!("SVG read error: {}", e)),
         }
@@ -761,12 +777,16 @@ fn rewrite_style_value(
 /// runs gtk-update-icon-cache.
 pub fn apply_icon_theme(theme_name: &str) -> Result<(), String> {
     let is_gnome = std::env::var("GNOME_DESKTOP_SESSION_ID").is_ok()
-        || std::env::var("XDG_CURRENT_DESKTOP")
-            .is_ok_and(|v| v.to_lowercase().contains("gnome"));
+        || std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|v| v.to_lowercase().contains("gnome"));
 
     if is_gnome {
         let output = Command::new("gsettings")
-            .args(["set", "org.gnome.desktop.interface", "icon-theme", theme_name])
+            .args([
+                "set",
+                "org.gnome.desktop.interface",
+                "icon-theme",
+                theme_name,
+            ])
             .output()
             .map_err(|e| format!("failed to run gsettings: {}", e))?;
         if !output.status.success() {
@@ -786,14 +806,9 @@ pub fn apply_icon_theme(theme_name: &str) -> Result<(), String> {
         .output();
 
     if let Err(e) = cache_output {
-        eprintln!(
-            "warning: gtk-update-icon-cache failed: {} (non-fatal)",
-            e
-        );
+        eprintln!("warning: gtk-update-icon-cache failed: {} (non-fatal)", e);
     } else if !cache_output.unwrap().status.success() {
-        eprintln!(
-            "warning: gtk-update-icon-cache returned non-zero (non-fatal)"
-        );
+        eprintln!("warning: gtk-update-icon-cache returned non-zero (non-fatal)");
     }
 
     Ok(())
@@ -812,12 +827,17 @@ fn write_gtk_icon_theme(theme_name: &str) -> Result<(), String> {
             std::fs::read_to_string(&ini_path)
                 .map_err(|e| format!("failed to read {}: {}", ini_path.display(), e))?
         } else {
-            String::from("[Settings]
-")
+            String::from(
+                "[Settings]
+",
+            )
         };
 
         let new_line = format!("gtk-icon-theme-name={}", theme_name);
-        let updated = if content.lines().any(|l| l.starts_with("gtk-icon-theme-name=")) {
+        let updated = if content
+            .lines()
+            .any(|l| l.starts_with("gtk-icon-theme-name="))
+        {
             content
                 .lines()
                 .map(|l| {
@@ -828,11 +848,17 @@ fn write_gtk_icon_theme(theme_name: &str) -> Result<(), String> {
                     }
                 })
                 .collect::<Vec<_>>()
-                .join("
-")
+                .join(
+                    "
+",
+                )
         } else {
-            format!("{}
-{}", content.trim_end(), new_line)
+            format!(
+                "{}
+{}",
+                content.trim_end(),
+                new_line
+            )
         };
 
         if let Some(parent) = ini_path.parent() {
@@ -875,9 +901,18 @@ mod tests {
         let content = "builtin = \"Eldritch\"
 custom_palette = \"Purple Haze\"
 source = \"custom\"";
-        assert_eq!(extract_toml_string(content, "builtin"), Some("Eldritch".to_string()));
-        assert_eq!(extract_toml_string(content, "custom_palette"), Some("Purple Haze".to_string()));
-        assert_eq!(extract_toml_string(content, "source"), Some("custom".to_string()));
+        assert_eq!(
+            extract_toml_string(content, "builtin"),
+            Some("Eldritch".to_string())
+        );
+        assert_eq!(
+            extract_toml_string(content, "custom_palette"),
+            Some("Purple Haze".to_string())
+        );
+        assert_eq!(
+            extract_toml_string(content, "source"),
+            Some("custom".to_string())
+        );
     }
 
     /// Regression test: generate_index_theme produces a valid index.theme with
@@ -887,28 +922,56 @@ source = \"custom\"";
         let tmp = std::env::temp_dir().join("akspraypaint_index_test");
         std::fs::create_dir_all(&tmp).unwrap();
 
-        let categories = vec!["places".to_string(), "devices".to_string(), "mimetypes".to_string()];
+        let categories = vec![
+            "places".to_string(),
+            "devices".to_string(),
+            "mimetypes".to_string(),
+        ];
         generate_index_theme(&tmp, "TestTheme", "Adwaita", &categories).unwrap();
 
         let index = std::fs::read_to_string(tmp.join("index.theme")).unwrap();
 
         // Must have [Icon Theme] section with Name=
-        assert!(index.contains("[Icon Theme]"), "missing [Icon Theme] section");
+        assert!(
+            index.contains("[Icon Theme]"),
+            "missing [Icon Theme] section"
+        );
         assert!(index.contains("Name=TestTheme"), "missing Name=");
 
         // Must have Directories= key inside [Icon Theme], not a [Directories] section
         assert!(index.contains("Directories="), "missing Directories= key");
-        assert!(!index.contains("[Directories]"), "[Directories] is NOT a valid section header — bug");
+        assert!(
+            !index.contains("[Directories]"),
+            "[Directories] is NOT a valid section header — bug"
+        );
 
         // Directories= must list exactly the scalable subdirs we passed
-        assert!(index.contains("scalable/places"), "scalable/places missing from Directories=");
-        assert!(index.contains("scalable/devices"), "scalable/devices missing from Directories=");
-        assert!(index.contains("scalable/mimetypes"), "scalable/mimetypes missing from Directories=");
+        assert!(
+            index.contains("scalable/places"),
+            "scalable/places missing from Directories="
+        );
+        assert!(
+            index.contains("scalable/devices"),
+            "scalable/devices missing from Directories="
+        );
+        assert!(
+            index.contains("scalable/mimetypes"),
+            "scalable/mimetypes missing from Directories="
+        );
 
         // Each listed directory must have a corresponding [scalable/X] stanza
-        assert!(index.contains("[scalable/places]"), "missing [scalable/places] stanza");
-        assert!(index.contains("[scalable/devices]"), "missing [scalable/devices] stanza");
-        assert!(index.contains("[scalable/mimetypes]"), "missing [scalable/mimetypes] stanza");
+        assert!(
+            index.contains("[scalable/places]"),
+            "missing [scalable/places] stanza"
+        );
+        assert!(
+            index.contains("[scalable/devices]"),
+            "missing [scalable/devices] stanza"
+        );
+        assert!(
+            index.contains("[scalable/mimetypes]"),
+            "missing [scalable/mimetypes] stanza"
+        );
 
         // Stanzas must have Type=Scalable
         assert!(index.contains("Type=Scalable"), "missing Type=Scalable");

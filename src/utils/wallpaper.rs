@@ -49,7 +49,10 @@ fn try_noctalia_cache() -> Option<PathBuf> {
             for line in content.lines() {
                 if line.starts_with("wallpaper") {
                     if let Some(eq_pos) = line.find('=') {
-                        let path_str = line[eq_pos + 1..].trim().trim_matches('"').trim_matches('\'');
+                        let path_str = line[eq_pos + 1..]
+                            .trim()
+                            .trim_matches('"')
+                            .trim_matches('\'');
                         let path = PathBuf::from(path_str);
                         if path.is_file() {
                             return Some(path);
@@ -59,7 +62,7 @@ fn try_noctalia_cache() -> Option<PathBuf> {
             }
         }
     }
-    
+
     // Try XDG data directories
     if let Some(data_dir) = dirs::data_dir() {
         let paths = [
@@ -73,7 +76,7 @@ fn try_noctalia_cache() -> Option<PathBuf> {
             }
         }
     }
-    
+
     // Try common noctalia cache locations
     if let Some(cache_dir) = dirs::cache_dir() {
         let paths = [
@@ -86,7 +89,7 @@ fn try_noctalia_cache() -> Option<PathBuf> {
             }
         }
     }
-    
+
     // Try XDG state directory
     if let Some(state_dir) = dirs::state_dir() {
         let paths = [
@@ -99,15 +102,12 @@ fn try_noctalia_cache() -> Option<PathBuf> {
             }
         }
     }
-    
+
     None
 }
 
 fn try_swaybg() -> Option<PathBuf> {
-    let output = Command::new("pgrep")
-        .args(["-a", "swaybg"])
-        .output()
-        .ok()?;
+    let output = Command::new("pgrep").args(["-a", "swaybg"]).output().ok()?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     for line in stdout.lines() {
         let args: Vec<&str> = line.split_whitespace().collect();
@@ -142,11 +142,7 @@ fn try_swww() -> Option<PathBuf> {
 
 fn try_gsettings() -> Option<PathBuf> {
     let output = Command::new("gsettings")
-        .args([
-            "get",
-            "org.gnome.desktop.background",
-            "picture-uri-dark",
-        ])
+        .args(["get", "org.gnome.desktop.background", "picture-uri-dark"])
         .output()
         .ok()?;
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -180,9 +176,7 @@ fn urlencoding(raw: &str) -> String {
     let mut i = 0;
     while i < chars.len() {
         if chars[i] == '%' && i + 2 < chars.len() {
-            if let Ok(byte) =
-                u8::from_str_radix(&format!("{}{}", chars[i + 1], chars[i + 2]), 16)
-            {
+            if let Ok(byte) = u8::from_str_radix(&format!("{}{}", chars[i + 1], chars[i + 2]), 16) {
                 result.push(byte as char);
                 i += 3;
                 continue;
@@ -220,10 +214,7 @@ fn try_set_swww(path: &Path) -> bool {
 }
 
 fn try_set_swaybg(path: &Path) -> bool {
-    Command::new("killall")
-        .args(["-q", "swaybg"])
-        .output()
-        .ok();
+    Command::new("killall").args(["-q", "swaybg"]).output().ok();
     std::thread::sleep(std::time::Duration::from_millis(100));
     let output = Command::new("swaybg")
         .args(["-i", &path.to_string_lossy(), "-m", "fill"])

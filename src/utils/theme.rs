@@ -38,8 +38,7 @@ pub fn read_theme() -> Result<(NoctaliaTheme, String), String> {
     })?;
     let content =
         std::fs::read_to_string(&path).map_err(|e| format!("failed to read theme: {}", e))?;
-    let theme = parse_theme(&content)
-        .ok_or_else(|| "failed to parse theme".to_string())?;
+    let theme = parse_theme(&content).ok_or_else(|| "failed to parse theme".to_string())?;
     Ok((theme, content))
 }
 

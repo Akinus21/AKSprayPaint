@@ -24,12 +24,13 @@ pub fn kill_daemon() -> Result<(), String> {
     if !path.exists() {
         return Err("daemon not running (pid file not found)".to_string());
     }
-    let pid_str = std::fs::read_to_string(&path)
-        .map_err(|e| format!("failed to read pid file: {}", e))?;
-    let pid: u32 = pid_str.trim()
+    let pid_str =
+        std::fs::read_to_string(&path).map_err(|e| format!("failed to read pid file: {}", e))?;
+    let pid: u32 = pid_str
+        .trim()
         .parse()
         .map_err(|e| format!("failed to parse pid: {}", e))?;
-    
+
     #[cfg(unix)]
     {
         use std::process::Command;
@@ -46,12 +47,12 @@ pub fn kill_daemon() -> Result<(), String> {
             .spawn()
             .map_err(|e| format!("failed to kill daemon: {}", e))?;
     }
-    
+
     #[cfg(not(unix))]
     {
         return Err("kill not supported on this platform".to_string());
     }
-    
+
     std::fs::remove_file(&path).ok();
     Ok(())
 }

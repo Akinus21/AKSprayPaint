@@ -37,8 +37,7 @@ pub fn save_to_cache(
     wallpaper_path: &Path,
 ) -> Result<PathBuf, String> {
     let dir = cache_dir_for_hash(theme_hash);
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| format!("failed to create cache dir: {}", e))?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("failed to create cache dir: {}", e))?;
     let dest = cached_path(theme_hash, wallpaper_path);
     std::fs::write(&dest, data).map_err(|e| format!("failed to write cache: {}", e))?;
     Ok(dest)
@@ -50,12 +49,10 @@ pub fn clean_cache() -> Result<usize, String> {
         return Ok(0);
     }
     let mut count = 0;
-    let entries = std::fs::read_dir(&root)
-        .map_err(|e| format!("failed to read cache dir: {}", e))?;
+    let entries =
+        std::fs::read_dir(&root).map_err(|e| format!("failed to read cache dir: {}", e))?;
     for entry in entries.flatten() {
-        if entry.path().is_dir()
-            && std::fs::remove_dir_all(entry.path()).is_ok()
-        {
+        if entry.path().is_dir() && std::fs::remove_dir_all(entry.path()).is_ok() {
             count += 1;
         }
     }

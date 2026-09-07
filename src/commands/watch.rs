@@ -8,8 +8,8 @@ const DEBOUNCE_MS: u64 = 500;
 pub fn watch(wp_override: Option<&str>) -> Result<(), String> {
     daemon::write_pid()?;
 
-    let noctalia_dir = theme::noctalia_dir()
-        .ok_or_else(|| "noctalia config directory not found".to_string())?;
+    let noctalia_dir =
+        theme::noctalia_dir().ok_or_else(|| "noctalia config directory not found".to_string())?;
 
     let wp_path = if let Some(path) = wp_override {
         let p = PathBuf::from(path);
@@ -34,8 +34,7 @@ pub fn watch(wp_override: Option<&str>) -> Result<(), String> {
     eprintln!("Current wallpaper: {}", wp_path.display());
     eprintln!("Daemon started with PID {}", std::process::id());
 
-    let mut inotify =
-        Inotify::init().map_err(|e| format!("failed to init inotify: {}", e))?;
+    let mut inotify = Inotify::init().map_err(|e| format!("failed to init inotify: {}", e))?;
 
     inotify
         .watches()
@@ -49,9 +48,7 @@ pub fn watch(wp_override: Option<&str>) -> Result<(), String> {
         .map_err(|e| format!("failed to watch directory: {}", e))?;
 
     let mut buffer = [0u8; 4096];
-    let mut last_event = Instant::now()
-        .checked_sub(Duration::from_secs(60))
-        .unwrap();
+    let mut last_event = Instant::now().checked_sub(Duration::from_secs(60)).unwrap();
 
     loop {
         let events = inotify
