@@ -379,14 +379,26 @@ pub fn recolor_icons(theme_name: &str, verbose: bool) -> Result<String, String> 
                     continue;
                 }
                 match recolor_svg_icon(&path, &theme_data, &output_dir, verbose) {
-                    Ok(_) => {
+                    Ok(svg_path) => {
                         let name = path.file_name().unwrap();
-                        let src_size_dir = path
-                            .parent()
-                            .and_then(|p| p.file_name())
-                            .unwrap_or(".".as_ref());
-                        let src_recolored = output_dir.join(src_size_dir).join(name);
-                        std::fs::copy(&src_recolored, dst_sub.join(name)).ok();
+
+                        // Read the recolored SVG bytes for additional copies
+                        let recolored_bytes = std::fs::read(&svg_path)
+                            .map_err(|e| format!("failed to read recolored SVG: {}", e))?;
+
+                        // Write to scalable/ subdir (primary location)
+                        let dst_scalable = out_scalable.join(sub).join(name);
+                        std::fs::write(&dst_scalable, &recolored_bytes)
+                            .map_err(|e| format!("failed to write scalable: {}", e))
+                            .ok();
+
+                        // Also copy into 48x48/ subdir so GTK finds recolored icons
+                        // at exact requested sizes (before falling back to hicolor)
+                        let dst_48 = output_dir.join("48x48").join(sub).join(name);
+                        std::fs::write(&dst_48, &recolored_bytes)
+                            .map_err(|e| format!("failed to write 48x48: {}", e))
+                            .ok();
+
                         total += 1;
                     }
                     Err(e) => {
