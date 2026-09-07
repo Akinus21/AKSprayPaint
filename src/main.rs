@@ -48,6 +48,8 @@ enum Command {
     Status,
     /// Remove all cached recolored images
     Clean,
+    /// Upgrade akspraypaint via Homebrew
+    Upgrade,
 }
 
 #[derive(Subcommand)]
@@ -96,6 +98,7 @@ fn main() {
         Command::Set { path } => commands::set::set(&path),
         Command::Status => commands::set::status(),
         Command::Clean => commands::set::clean(),
+        Command::Upgrade => commands::upgrade::upgrade(),
     };
 
     if let Err(e) = result {
