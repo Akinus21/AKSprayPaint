@@ -1,6 +1,6 @@
 [package]
 name = "akspraypaint"
-version = "0.0.105"
+version = "0.0.106"
 edition = "2021"
 description = "Recolors the current wallpaper to match the noctalia theme"
 
