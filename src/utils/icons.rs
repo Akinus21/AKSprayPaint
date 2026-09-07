@@ -979,22 +979,9 @@ pub fn apply_icon_theme(theme_name: &str) -> Result<(), String> {
         );
     }
 
-    // Restart Nemo only if it was already running (not if it wasn't open)
-    let nemo_was_running = std::process::Command::new("pgrep")
-        .args(["-x", "nemo"])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-
-    if nemo_was_running {
-        let nemo_quit = Command::new("nemo").args(["--quit"]).output();
-        if nemo_quit.as_ref().map(|o| o.status.success()).unwrap_or(false) {
-            std::thread::spawn(|| {
-                std::thread::sleep(std::time::Duration::from_millis(300));
-                let _ = Command::new("nemo").spawn();
-            });
-        }
-    }
+    // Note: We intentionally do NOT restart Nemo here. `nemo --quit` can terminate
+    // the user's GNOME session on some systems. The user should restart Nemo
+    // manually after icon recoloring if needed: `nemo -q; nemo &`
 
     Ok(())
 }
