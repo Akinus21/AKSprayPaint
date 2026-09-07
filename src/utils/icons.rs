@@ -65,10 +65,15 @@ pub fn get_active_icon_theme() -> Option<String> {
 }
 
 /// Pick the best available icon theme to use as the source for recoloring.
-/// Searches in priority order: the currently active gsettings theme (if it
-/// exists on disk), then Adwaita, then the first theme found on disk.
+/// Noctalia is always preferred if installed (it's the canonical source theme).
+/// Otherwise falls back to the currently-active gsettings theme, Adwaita,
+/// or the first theme found on disk.
 pub fn find_best_base_theme() -> String {
-    // Try the currently-active theme first
+    // Noctalia is the canonical source — use it if present
+    if find_icon_theme_root("Noctalia").is_some() {
+        return "Noctalia".to_string();
+    }
+    // Try the currently-active theme, but skip PurpleHaze (it's our output)
     if let Some(active) = get_active_icon_theme() {
         if !active.eq_ignore_ascii_case("PurpleHaze")
             && find_icon_theme_root(&active).is_some()
@@ -76,7 +81,7 @@ pub fn find_best_base_theme() -> String {
             return active;
         }
     }
-    // Fall back to Adwaita if it's installed
+    // Fall back to Adwaita if installed
     if find_icon_theme_root("Adwaita").is_some() {
         return "Adwaita".to_string();
     }
