@@ -52,13 +52,11 @@ pub fn clean_cache() -> Result<usize, String> {
     let mut count = 0;
     let entries = std::fs::read_dir(&root)
         .map_err(|e| format!("failed to read cache dir: {}", e))?;
-    for entry in entries {
-        if let Ok(entry) = entry {
-            if entry.path().is_dir() {
-                if std::fs::remove_dir_all(entry.path()).is_ok() {
-                    count += 1;
-                }
-            }
+    for entry in entries.flatten() {
+        if entry.path().is_dir()
+            && std::fs::remove_dir_all(entry.path()).is_ok()
+        {
+            count += 1;
         }
     }
     Ok(count)

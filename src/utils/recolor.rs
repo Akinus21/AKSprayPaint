@@ -215,6 +215,7 @@ fn get_hex_from_scheme(obj: &serde_json::Map<String, serde_json::Value>, key: &s
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct MatugenTheme {
     pub primary: [u8; 3],
     pub on_primary: [u8; 3],

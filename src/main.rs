@@ -4,7 +4,7 @@ mod utils;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "akspraypaint", about = "Recolors wallpaper to match noctalia theme")]
+#[command(name = "akspraypaint", about = "Recolors wallpaper and icons to match the noctalia theme")]
 struct Cli {
     #[arg(long, help = "Kill the running watch daemon")]
     disable: bool,
@@ -28,11 +28,16 @@ enum Command {
         #[arg(long)]
         no_cache: bool,
     },
-    /// Watch for noctalia theme changes and automatically recolor
+    /// Watch for noctalia theme changes and automatically recolor wallpaper
     Watch {
         /// Path to wallpaper (auto-detect if not provided)
         #[arg(long)]
         wallpaper: Option<String>,
+    },
+    /// Recolor GTK icons to match the active theme
+    Icons {
+        #[command(subcommand)]
+        sub: IconsSubcommand,
     },
     /// Recolor a specific image and set it as wallpaper
     Set {
@@ -42,6 +47,20 @@ enum Command {
     /// Show current status (wallpaper, theme, cache)
     Status,
     /// Remove all cached recolored images
+    Clean,
+}
+
+#[derive(Subcommand)]
+enum IconsSubcommand {
+    /// Recolor icons now (one-shot)
+    Recolor {
+        /// Verbose output
+        #[arg(long)]
+        verbose: bool,
+    },
+    /// Watch for theme changes and automatically recolor icons
+    Watch,
+    /// Remove the PurpleHaze icon theme
     Clean,
 }
 
@@ -65,8 +84,15 @@ fn main() {
     };
 
     let result = match command {
-        Command::Run { wallpaper, verbose, no_cache } => commands::run::run(wallpaper.as_deref(), verbose, no_cache),
+        Command::Run { wallpaper, verbose, no_cache } => {
+            commands::run::run(wallpaper.as_deref(), verbose, no_cache)
+        }
         Command::Watch { wallpaper } => commands::watch::watch(wallpaper.as_deref()),
+        Command::Icons { sub } => match sub {
+            IconsSubcommand::Recolor { verbose } => commands::icons::recolor(verbose),
+            IconsSubcommand::Watch => commands::icons::watch(),
+            IconsSubcommand::Clean => commands::icons::clean(),
+        },
         Command::Set { path } => commands::set::set(&path),
         Command::Status => commands::set::status(),
         Command::Clean => commands::set::clean(),

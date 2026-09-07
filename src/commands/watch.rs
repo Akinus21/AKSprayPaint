@@ -1,6 +1,6 @@
 use crate::utils::{daemon, theme, wallpaper};
 use inotify::{EventMask, Inotify, WatchMask};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 const DEBOUNCE_MS: u64 = 500;
@@ -87,7 +87,7 @@ pub fn watch(wp_override: Option<&str>) -> Result<(), String> {
     }
 }
 
-fn apply_theme(wp_path: &PathBuf) -> Result<(), String> {
+fn apply_theme(wp_path: &Path) -> Result<(), String> {
     let (_, theme_content) = theme::read_theme()?;
     let hash = theme::theme_hash(&theme_content);
 

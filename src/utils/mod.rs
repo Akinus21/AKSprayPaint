@@ -1,5 +1,6 @@
 pub mod cache;
 pub mod daemon;
+pub mod icons;
 pub mod recolor;
 pub mod theme;
 pub mod wallpaper;
