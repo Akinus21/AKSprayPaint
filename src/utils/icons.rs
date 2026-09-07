@@ -637,7 +637,8 @@ fn recolor_raster_icon(src: &Path, theme_data: &NoctaliaTheme) -> Result<PathBuf
 // Apply theme
 // ---------------------------------------------------------------------------
 
-/// Apply the PurpleHaze icon theme via gsettings.
+/// Apply the PurpleHaze icon theme via gsettings, then rebuild the GTK icon
+/// cache so Nemo picks up the new colors without a restart.
 pub fn apply_icon_theme() -> Result<(), String> {
     let output = Command::new("gsettings")
         .args(["set", "org.gnome.desktop.interface", "icon-theme", ICON_THEME_NAME])
@@ -649,6 +650,20 @@ pub fn apply_icon_theme() -> Result<(), String> {
             String::from_utf8_lossy(&output.stderr)
         ));
     }
+
+    // Rebuild the GTK icon cache so Nemo picks up the new theme immediately.
+    let cache_output = Command::new("gtk-update-icon-cache")
+        .args(["--force", &icon_theme_dir().to_string_lossy()])
+        .output();
+
+    if let Err(e) = cache_output {
+        eprintln!("warning: gtk-update-icon-cache failed: {} (non-fatal)", e);
+    } else if !cache_output.unwrap().status.success() {
+        eprintln!(
+            "warning: gtk-update-icon-cache returned non-zero (non-fatal)"
+        );
+    }
+
     Ok(())
 }
 
