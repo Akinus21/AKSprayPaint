@@ -104,6 +104,10 @@ fn get_active_icon_theme() -> Option<String> {
 /// Skips any recolored output themes (those in ~/.local/share/icons that
 /// we may have created previously).
 pub(crate) fn find_best_base_theme() -> String {
+    // Check system Adwaita first — it has the full scalable/ icons
+    if find_icon_theme_root_at("/usr/share/icons/Adwaita").is_some() {
+        return "Adwaita".to_string();
+    }
     if let Some(active) = get_active_icon_theme() {
         // Skip if the active theme IS a recolored output (not a real source)
         if !is_recolored_output(&active)
@@ -117,6 +121,20 @@ pub(crate) fn find_best_base_theme() -> String {
     }
     // Always fall back to Adwaita (covers Adwaita-dark as a variant)
     "Adwaita".to_string()
+}
+
+/// Check if a specific path has a valid icon theme root (not just by name).
+fn find_icon_theme_root_at(path: &str) -> Option<PathBuf> {
+    let p = PathBuf::from(path);
+    if p.is_dir()
+        && (p.join("index.theme").exists()
+            || p.join("16x16").is_dir()
+            || p.join("scalable").is_dir())
+    {
+        Some(p)
+    } else {
+        None
+    }
 }
 
 /// Check if a theme name looks like a recolored output (e.g. Purple_Haze,
