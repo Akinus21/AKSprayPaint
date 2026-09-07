@@ -419,19 +419,11 @@ fn generate_index_theme(output_dir: &Path, theme_name: &str, base_name: &str) ->
          Name={}\n\
          Comment=Recolored by AKSprayPaint from {}\n\
          DisplayName={}\n\
-         Inherits={}\n\
+         Inherits=hicolor\n\
          Example=folder\n\
          FollowsNav=True\n\
          \n\
          [Directories]\n\
-         16x16=status\n\
-         22x22=status\n\
-         24x24=status\n\
-         32x32=actions\n\
-         48x48=devices\n\
-         64x64=actions\n\
-         128x128=mimetypes\n\
-         256x256=apps\n\
          scalable/actions=svg\n\
          scalable/apps=svg\n\
          scalable/categories=svg\n\
@@ -442,8 +434,7 @@ fn generate_index_theme(output_dir: &Path, theme_name: &str, base_name: &str) ->
          scalable/status=svg\n",
         theme_name,
         base_name,
-        theme_name.replace('_', " "),
-        base_name
+        theme_name.replace('_', " ")
     );
 
     std::fs::write(output_dir.join("index.theme"), index_content)
