@@ -111,9 +111,8 @@ pub fn find_icon_theme_root(name: &str) -> Option<PathBuf> {
     best.map(|(p, _)| p)
 }
 
-/// Check if an icon theme directory has actual icon files.
+/// Check if an icon theme directory has actual scalable SVG icons.
 fn check_theme_has_icons(path: &Path) -> bool {
-    // Check scalable subdirs
     let scalable = path.join("scalable");
     if scalable.is_dir() {
         if let Ok(entries) = std::fs::read_dir(&scalable) {
@@ -131,23 +130,6 @@ fn check_theme_has_icons(path: &Path) -> bool {
             }
         }
     }
-
-    // Check size dirs (16x16, 24x24, etc.)
-    for size in &["16x16", "24x24", "32x32", "48x48", "64x64", "128x128", "256x256"] {
-        let size_dir = path.join(size);
-        if size_dir.is_dir() {
-            if let Ok(entries) = std::fs::read_dir(&size_dir) {
-                for entry in entries.flatten() {
-                    if let Some(ext) = entry.path().extension().and_then(|e| e.to_str()) {
-                        if ext == "svg" || ext == "png" || ext == "jpg" {
-                            return true;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     false
 }
 
@@ -254,6 +236,8 @@ fn theme_hash_for_icons(theme_data: &NoctaliaTheme) -> String {
 // Reuse wallpaper recolor
 // --------------------------------------------------------------------------
 
+/// Raster image recolor (wallpaper path — retained for potential reuse).
+#[allow(dead_code)]
 pub fn recolor_image(
     input: &image::RgbImage,
     theme_data: &NoctaliaTheme,
@@ -267,6 +251,7 @@ pub fn recolor_image(
 // --------------------------------------------------------------------------
 
 /// Recolor all icons from the base theme and write to the per-theme output dir.
+/// Only processes scalable/ SVGs — GTK rasterizes them to whatever size is needed.
 pub fn recolor_icons(theme_name: &str, verbose: bool) -> Result<String, String> {
     let (_, theme_content) = theme::read_theme()?;
     let theme_data = parse_theme(&theme_content)
@@ -287,180 +272,103 @@ pub fn recolor_icons(theme_name: &str, verbose: bool) -> Result<String, String> 
         eprintln!("Output dir: {}", output_dir.display());
         eprintln!("Theme hash: {}", hash);
         eprintln!("Theme palette:");
-        eprintln!("  primary:      #{:02x}{:02x}{:02x}", theme_data.primary[0], theme_data.primary[1], theme_data.primary[2]);
-        eprintln!("  on_primary:  #{:02x}{:02x}{:02x}", theme_data.on_primary[0], theme_data.on_primary[1], theme_data.on_primary[2]);
-        eprintln!("  surface:      #{:02x}{:02x}{:02x}", theme_data.surface[0], theme_data.surface[1], theme_data.surface[2]);
-        eprintln!("  on_surface:  #{:02x}{:02x}{:02x}", theme_data.on_surface[0], theme_data.on_surface[1], theme_data.on_surface[2]);
-        eprintln!("  surface_var: #{:02x}{:02x}{:02x}", theme_data.surface_variant[0], theme_data.surface_variant[1], theme_data.surface_variant[2]);
-        eprintln!("  on_surface_v:#{:02x}{:02x}{:02x}", theme_data.on_surface_variant[0], theme_data.on_surface_variant[1], theme_data.on_surface_variant[2]);
-        eprintln!("  error:       #{:02x}{:02x}{:02x}", theme_data.error[0], theme_data.error[1], theme_data.error[2]);
+        eprintln!(
+            "  primary:      #{:02x}{:02x}{:02x}",
+            theme_data.primary[0], theme_data.primary[1], theme_data.primary[2]
+        );
+        eprintln!(
+            "  on_primary:  #{:02x}{:02x}{:02x}",
+            theme_data.on_primary[0],
+            theme_data.on_primary[1],
+            theme_data.on_primary[2]
+        );
+        eprintln!(
+            "  surface:      #{:02x}{:02x}{:02x}",
+            theme_data.surface[0], theme_data.surface[1], theme_data.surface[2]
+        );
+        eprintln!(
+            "  on_surface:  #{:02x}{:02x}{:02x}",
+            theme_data.on_surface[0], theme_data.on_surface[1], theme_data.on_surface[2]
+        );
+        eprintln!(
+            "  surface_var: #{:02x}{:02x}{:02x}",
+            theme_data.surface_variant[0],
+            theme_data.surface_variant[1],
+            theme_data.surface_variant[2]
+        );
+        eprintln!(
+            "  on_surface_v:#{:02x}{:02x}{:02x}",
+            theme_data.on_surface_variant[0],
+            theme_data.on_surface_variant[1],
+            theme_data.on_surface_variant[2]
+        );
+        eprintln!(
+            "  error:       #{:02x}{:02x}{:02x}",
+            theme_data.error[0], theme_data.error[1], theme_data.error[2]
+        );
     }
 
-    // Collect sizes to process
-    let sizes = ["16x16", "22x22", "24x24", "32x32", "48x48", "64x64", "128x128", "256x256"];
+    // Discover which category subdirs actually exist in scalable/
+    let scalable_base = base_root.join("scalable");
+    let mut categories: Vec<String> = Vec::new();
+    if scalable_base.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(&scalable_base) {
+            for entry in entries.flatten() {
+                let sub = entry.path();
+                if sub.is_dir() {
+                    if let Some(name) = sub.file_name().and_then(|n| n.to_str()) {
+                        categories.push(name.to_string());
+                    }
+                }
+            }
+        }
+    }
+    categories.sort();
+
+    if verbose {
+        eprintln!("Categories found: {:?}", categories);
+    }
+
+    // Process scalable/ SVGs by category subdirectory
     let mut total = 0usize;
     let mut errors = 0usize;
 
-    for size in &sizes {
-        let size_base = base_root.join(size);
-        if !size_base.is_dir() {
-            continue;
-        }
-        let out_size = output_dir.join(size);
-        std::fs::create_dir_all(&out_size)
-            .map_err(|e| format!("failed to create {} dir: {}", size, e))?;
+    for cat in &categories {
+        let src_sub = scalable_base.join(cat);
+        let dst_sub = output_dir.join("scalable").join(cat);
+        std::fs::create_dir_all(&dst_sub)
+            .map_err(|e| format!("failed to create scalable/{} dir: {}", cat, e))?;
 
-        let entries = match std::fs::read_dir(&size_base) {
+        let entries = match std::fs::read_dir(&src_sub) {
             Ok(e) => e,
             Err(_) => continue,
         };
 
         for entry in entries.flatten() {
             let path = entry.path();
-
-            if path.is_dir() {
-                // Size dir contains category subdirs (e.g. 16x16/places/)
-                // Find which subdir this is and process it
-                let sub_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-                let sub_out = out_size.join(sub_name);
-                std::fs::create_dir_all(&sub_out).ok();
-
-                let src_sub = size_base.join(sub_name);
-                let entries_sub = match std::fs::read_dir(&src_sub) {
-                    Ok(e) => e,
-                    Err(_) => continue,
-                };
-                for entry_sub in entries_sub.flatten() {
-                    let file_path = entry_sub.path();
-                    if file_path.is_symlink() {
-                        continue;
-                    }
-                    let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
-                    let stem = file_path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-                    if stem.ends_with("_recolored") {
-                        continue;
-                    }
-
-                    let result: Result<(), String> = if ext == "svg" {
-                        recolor_svg_icon(&file_path, &theme_data, &output_dir, verbose)
-                            .map(|_| ())
-                    } else if matches!(ext, "png" | "jpg" | "jpeg" | "webp" | "bmp") {
-                        recolor_raster_icon(&file_path, &theme_data, &output_dir).map(|_| ())
-                    } else {
-                        let dst = sub_out.join(file_path.file_name().unwrap());
-                        std::fs::copy(&file_path, &dst)
-                            .map(|_| ())
-                            .map_err(|e| e.to_string())
-                    };
-
-                    match result {
-                        Ok(_) => total += 1,
-                        Err(e) => {
-                            errors += 1;
-                            if verbose {
-                                eprintln!("  [{}] {}: {}", ext, file_path.display(), e);
-                            }
-                        }
-                    }
-                }
-            } else if path.is_symlink() {
+            if path.is_symlink()
+                || path.extension().and_then(|e| e.to_str()) != Some("svg")
+            {
                 continue;
-            } else {
-                // Flat file directly in size dir (e.g. 16x16/icon.png)
-                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-                let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-                if stem.ends_with("_recolored") {
-                    continue;
-                }
+            }
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            if stem.ends_with("_recolored") {
+                continue;
+            }
 
-                let result: Result<(), String> = if ext == "svg" {
-                    recolor_svg_icon(&path, &theme_data, &output_dir, verbose).map(|_| ())
-                } else if matches!(ext, "png" | "jpg" | "jpeg" | "webp" | "bmp") {
-                    recolor_raster_icon(&path, &theme_data, &output_dir).map(|_| ())
-                } else {
-                    let dst = out_size.join(path.file_name().unwrap());
-                    std::fs::copy(&path, &dst)
-                        .map(|_| ())
-                        .map_err(|e| e.to_string())
-                };
-
-                match result {
-                    Ok(_) => total += 1,
-                    Err(e) => {
-                        errors += 1;
-                        if verbose {
-                            eprintln!("  [{}] {}: {}", ext, path.display(), e);
-                        }
+            match recolor_svg_icon(&path, &theme_data, &output_dir, verbose) {
+                Ok(_) => total += 1,
+                Err(e) => {
+                    errors += 1;
+                    if verbose {
+                        eprintln!("  [scalable/{}] {}: {}", cat, path.display(), e);
                     }
                 }
             }
         }
     }
 
-    // Process scalable SVGs by subdirectory
-    let scalable_base = base_root.join("scalable");
-    if scalable_base.is_dir() {
-        let out_scalable = output_dir.join("scalable");
-        std::fs::create_dir_all(&out_scalable)
-            .map_err(|e| format!("failed to create scalable dir: {}", e))?;
-
-        let subdirs = [
-            "actions", "apps", "categories", "devices", "emblems",
-            "mimetypes", "places", "status",
-        ];
-
-        for sub in &subdirs {
-            let src_sub = scalable_base.join(sub);
-            let dst_sub = out_scalable.join(sub);
-            if !src_sub.is_dir() {
-                continue;
-            }
-            std::fs::create_dir_all(&dst_sub).ok();
-
-            let entries = match std::fs::read_dir(&src_sub) {
-                Ok(e) => e,
-                Err(_) => continue,
-            };
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) != Some("svg") {
-                    continue;
-                }
-                match recolor_svg_icon(&path, &theme_data, &output_dir, verbose) {
-                    Ok(svg_path) => {
-                        let name = path.file_name().unwrap();
-
-                        // Read the recolored SVG bytes for additional copies
-                        let recolored_bytes = std::fs::read(&svg_path)
-                            .map_err(|e| format!("failed to read recolored SVG: {}", e))?;
-
-                        // Write to scalable/ subdir (primary location)
-                        let dst_scalable = out_scalable.join(sub).join(name);
-                        std::fs::write(&dst_scalable, &recolored_bytes)
-                            .map_err(|e| format!("failed to write scalable: {}", e))
-                            .ok();
-
-                        // Also copy into 48x48/ subdir so GTK finds recolored icons
-                        // at exact requested sizes (before falling back to hicolor)
-                        let dst_48 = output_dir.join("48x48").join(sub).join(name);
-                        std::fs::write(&dst_48, &recolored_bytes)
-                            .map_err(|e| format!("failed to write 48x48: {}", e))
-                            .ok();
-
-                        total += 1;
-                    }
-                    Err(e) => {
-                        errors += 1;
-                        if verbose {
-                            eprintln!("  [scalable/{}] {}: {}", sub, path.display(), e);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    generate_index_theme(&output_dir, theme_name, &base_theme)?;
+    generate_index_theme(&output_dir, theme_name, &base_theme, &categories)?;
 
     if verbose {
         eprintln!("Recolored {} icons ({} errors)", total, errors);
@@ -472,140 +380,60 @@ pub fn recolor_icons(theme_name: &str, verbose: bool) -> Result<String, String> 
 // ------------------------------------------------------------------------------------------------------------------------------------------
 // Generate index.theme
 // ------------------------------------------------------------------------------------------------------------------------------------------
+/// Generate a valid index.theme with a proper Directories= key.
+/// Per the freedesktop icon theme spec, [Directories] is NOT a section header —
+/// it is a key inside [Icon Theme] whose value is a comma-separated list of
+/// subdirectories.
+fn generate_index_theme(
+    output_dir: &Path,
+    theme_name: &str,
+    base_name: &str,
+    categories: &[String],
+) -> Result<(), String> {
+    // Build scalable directory entries and per-directory stanzas
+    let mut dir_entries = String::new();
+    let mut scalable_stanzas = String::new();
 
-fn generate_index_theme(output_dir: &Path, theme_name: &str, base_name: &str) -> Result<(), String> {
+    for cat in categories {
+        dir_entries.push_str(&format!("scalable/{},", cat));
+        scalable_stanzas.push_str(&format!(
+            "[scalable/{}]\n\
+             Size=48\n\
+             Type=Scalable\n\
+             MinSize=1\n\
+             MaxSize=512\n\
+             Context={}\n\n",
+            cat,
+            capitalize(cat)
+        ));
+    }
+
     let index_content = format!(
-        "[Icon Theme]\n\
-         Name={}\n\
-         Comment=Recolored by AKSprayPaint from {}\n\
-         DisplayName={}\n\
-         Inherits=hicolor\n\
-         Example=folder\n\
-         FollowsNav=True\n\
-         \n\
-         [Directories]\n\
-         48x48/places=png\n\
-         48x48/devices=png\n\
-         48x48/mimetypes=png\n\
-         48x48/actions=png\n\
-         48x48/categories=png\n\
-         48x48/status=png\n\
-         48x48/emblems=png\n\
-         48x48/apps=png\n\
-         scalable/places=svg\n\
-         scalable/devices=svg\n\
-         scalable/mimetypes=svg\n\
-         scalable/actions=svg\n\
-         scalable/categories=svg\n\
-         scalable/status=svg\n\
-         scalable/emblems=svg\n\
-         scalable/apps=svg\n\
-         \n\
-         [48x48/places]\n\
-         Size=48\n\
-         Type=Threshold\n\
-         Context=Places\n\
-         \n\
-         [48x48/devices]\n\
-         Size=48\n\
-         Type=Threshold\n\
-         Context=Devices\n\
-         \n\
-         [48x48/mimetypes]\n\
-         Size=48\n\
-         Type=Threshold\n\
-         Context=MimeTypes\n\
-         \n\
-         [48x48/actions]\n\
-         Size=48\n\
-         Type=Threshold\n\
-         Context=Actions\n\
-         \n\
-         [48x48/categories]\n\
-         Size=48\n\
-         Type=Threshold\n\
-         Context=Categories\n\
-         \n\
-         [48x48/status]\n\
-         Size=48\n\
-         Type=Threshold\n\
-         Context=Status\n\
-         \n\
-         [48x48/emblems]\n\
-         Size=48\n\
-         Type=Threshold\n\
-         Context=Emblems\n\
-         \n\
-         [48x48/apps]\n\
-         Size=48\n\
-         Type=Threshold\n\
-         Context=Applications\n\
-         \n\
-         [scalable/places]\n\
-         Size=48\n\
-         Type=Scalable\n\
-         MinSize=1\n\
-         MaxSize=512\n\
-         Context=Places\n\
-         \n\
-         [scalable/devices]\n\
-         Size=48\n\
-         Type=Scalable\n\
-         MinSize=1\n\
-         MaxSize=512\n\
-         Context=Devices\n\
-         \n\
-         [scalable/mimetypes]\n\
-         Size=48\n\
-         Type=Scalable\n\
-         MinSize=1\n\
-         MaxSize=512\n\
-         Context=MimeTypes\n\
-         \n\
-         [scalable/actions]\n\
-         Size=48\n\
-         Type=Scalable\n\
-         MinSize=1\n\
-         MaxSize=512\n\
-         Context=Actions\n\
-         \n\
-         [scalable/categories]\n\
-         Size=48\n\
-         Type=Scalable\n\
-         MinSize=1\n\
-         MaxSize=512\n\
-         Context=Categories\n\
-         \n\
-         [scalable/status]\n\
-         Size=48\n\
-         Type=Scalable\n\
-         MinSize=1\n\
-         MaxSize=512\n\
-         Context=Status\n\
-         \n\
-         [scalable/emblems]\n\
-         Size=48\n\
-         Type=Scalable\n\
-         MinSize=1\n\
-         MaxSize=512\n\
-         Context=Emblems\n\
-         \n\
-         [scalable/apps]\n\
-         Size=48\n\
-         Type=Scalable\n\
-         MinSize=1\n\
-         MaxSize=512\n\
-         Context=Applications\n",
+        "[Icon Theme]\n         Name={}\n         Comment=Recolored by AKSprayPaint from {}\n         DisplayName={}\n         Inherits=hicolor\n         Directories={}\n         Example=folder\n         FollowsNav=True\n         \n         {}\n",
         theme_name,
         base_name,
-        theme_name.replace('_', " ")
+        theme_name.replace('_', " "),
+        dir_entries.trim_end_matches(','),
+        scalable_stanzas.trim(),
     );
+
+    if categories.is_empty() {
+        return Err("no scalable icon categories found in base theme".to_string());
+    }
 
     std::fs::write(output_dir.join("index.theme"), index_content)
         .map_err(|e| format!("failed to write index.theme: {}", e))?;
     Ok(())
 }
 
+/// Capitalize first character of a string.
+fn capitalize(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+    }
+}
 // ------------------------------------------------------------------------------------------------------------------------------------------
 // SVG color extraction & recoloring
 // ------------------------------------------------------------------------------------------------------------------------------------------
@@ -923,30 +751,6 @@ fn rewrite_style_value(
 // ------------------------------------------------------------------------------------------------------------------------------------------
 // Raster icon recoloring
 // ------------------------------------------------------------------------------------------------------------------------------------------
-
-fn recolor_raster_icon(
-    src: &Path,
-    theme_data: &NoctaliaTheme,
-    output_dir: &Path,
-) -> Result<PathBuf, String> {
-    let img = image::open(src).map_err(|e| format!("failed to open image: {}", e))?;
-    let rgb_img = img.to_rgb8();
-    let recolored = recolor_image(&rgb_img, theme_data, false);
-
-    let name = src.file_name().unwrap();
-    let size_dir = src
-        .parent()
-        .and_then(|p| p.file_name())
-        .unwrap_or(".".as_ref());
-    let out_path = output_dir.join(size_dir).join(name);
-
-    recolored
-        .save(&out_path)
-        .map_err(|e| format!("failed to save icon: {}", e))?;
-    Ok(out_path)
-}
-
-// ------------------------------------------------------------------------------------------------------------------------------------------
 // Apply theme
 // ------------------------------------------------------------------------------------------------------------------------------------------
 
@@ -1020,71 +824,39 @@ source = \"custom\"";
         assert_eq!(extract_toml_string(content, "source"), Some("custom".to_string()));
     }
 
-    /// Regression test: sized directories (16x16, 24x24, etc.) contain category
-    /// subdirs (places/, devices/, etc.) — not flat files. The per-size loop must
-    /// recurse into these subdirs, not treat the directory itself as a file and
-    /// error with "neither a regular file nor a symlink". This bug silently dropped
-    /// entire categories from the output theme at every raster size.
+    /// Regression test: generate_index_theme produces a valid index.theme with
+    /// the correct Directories= key listing all and only the provided categories.
     #[test]
-    fn test_sized_dir_with_category_subdirs_does_not_error() {
-        let tmp_src = std::env::temp_dir().join("akspraypaint_test_src");
-        let tmp_out = std::env::temp_dir().join("akspraypaint_test_out");
+    fn test_generate_index_theme_directories_key() {
+        let tmp = std::env::temp_dir().join("akspraypaint_index_test");
+        std::fs::create_dir_all(&tmp).unwrap();
 
-        // Build a fixture mimicking Adwaita's structure:
-        // 16x16/places/test.svg
-        // 16x16/devices/test.png
-        let src_16 = tmp_src.join("16x16");
-        let places_dir = src_16.join("places");
-        let devices_dir = src_16.join("devices");
-        std::fs::create_dir_all(&places_dir).unwrap();
-        std::fs::create_dir_all(&devices_dir).unwrap();
+        let categories = vec!["places".to_string(), "devices".to_string(), "mimetypes".to_string()];
+        generate_index_theme(&tmp, "TestTheme", "Adwaita", &categories).unwrap();
 
-        // Write a minimal valid SVG (must have XML declaration + svg root)
-        let svg_content = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\">\n  <rect width=\"16\" height=\"16\" fill=\"#62a0ea\"/>\n</svg>\n";
-        std::fs::write(places_dir.join("test.svg"), svg_content).unwrap();
-        std::fs::write(devices_dir.join("test.png"), &[0; 4]).unwrap(); // minimal 4-byte PNG
+        let index = std::fs::read_to_string(tmp.join("index.theme")).unwrap();
 
-        std::fs::create_dir_all(&tmp_out).unwrap();
+        // Must have [Icon Theme] section with Name=
+        assert!(index.contains("[Icon Theme]"), "missing [Icon Theme] section");
+        assert!(index.contains("Name=TestTheme"), "missing Name=");
 
-        // Walk the source the same way recolor_icons does for sized dirs:
-        // Entry is a DIR (not a file) — must recurse, not error
-        let size_base = &src_16;
-        let out_size = tmp_out.join("16x16");
-        std::fs::create_dir_all(&out_size).unwrap();
+        // Must have Directories= key inside [Icon Theme], not a [Directories] section
+        assert!(index.contains("Directories="), "missing Directories= key");
+        assert!(!index.contains("[Directories]"), "[Directories] is NOT a valid section header — bug");
 
-        let mut processed = 0usize;
-        let entries = std::fs::read_dir(size_base).unwrap();
-        for entry in entries.flatten() {
-            let path = entry.path();
-            assert!(path.is_dir(), "places/ and devices/ must be dirs in fixture");
-            let sub_name = path.file_name().unwrap().to_str().unwrap();
-            let sub_out = out_size.join(sub_name);
-            std::fs::create_dir_all(&sub_out).unwrap();
+        // Directories= must list exactly the scalable subdirs we passed
+        assert!(index.contains("scalable/places"), "scalable/places missing from Directories=");
+        assert!(index.contains("scalable/devices"), "scalable/devices missing from Directories=");
+        assert!(index.contains("scalable/mimetypes"), "scalable/mimetypes missing from Directories=");
 
-            let src_sub = size_base.join(sub_name);
-            let entries_sub = std::fs::read_dir(&src_sub).unwrap();
-            for entry_sub in entries_sub.flatten() {
-                let file_path = entry_sub.path();
-                if file_path.is_symlink() || file_path.is_dir() {
-                    continue;
-                }
-                // Must NOT reach here with the directory itself — that was the bug
-                let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
-                if ext == "svg" || ext == "png" {
-                    std::fs::copy(&file_path, sub_out.join(file_path.file_name().unwrap())).unwrap();
-                    processed += 1;
-                }
-            }
-        }
+        // Each listed directory must have a corresponding [scalable/X] stanza
+        assert!(index.contains("[scalable/places]"), "missing [scalable/places] stanza");
+        assert!(index.contains("[scalable/devices]"), "missing [scalable/devices] stanza");
+        assert!(index.contains("[scalable/mimetypes]"), "missing [scalable/mimetypes] stanza");
 
-        // If the bug existed, we'd have panicked above with
-        // "the source path is neither a regular file nor a symlink"
-        assert_eq!(processed, 2, "should have copied both test.svg and test.png");
-        assert!(tmp_out.join("16x16/places/test.svg").exists());
-        assert!(tmp_out.join("16x16/devices/test.png").exists());
+        // Stanzas must have Type=Scalable
+        assert!(index.contains("Type=Scalable"), "missing Type=Scalable");
 
-        // Cleanup
-        std::fs::remove_dir_all(&tmp_src).ok();
-        std::fs::remove_dir_all(&tmp_out).ok();
+        std::fs::remove_dir_all(&tmp).ok();
     }
 }
