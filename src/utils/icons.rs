@@ -462,7 +462,7 @@ fn extract_svg_palette(svg_bytes: &[u8]) -> Result<Vec<String>, String> {
                     let attr = attr_result.map_err(|e| format!("attr error: {}", e))?;
                     let key = std::str::from_utf8(attr.key.as_ref()).unwrap_or("");
 
-                    if key == "fill" || key == "stroke" {
+                    if key == "fill" || key == "stroke" || key == "stop-color" {
                         if let Ok(val) = attr.unescape_value() {
                             let s = val.as_ref();
                             if !s.is_empty() && s != "none" && s != "transparent" && s != "currentColor" {
@@ -613,13 +613,15 @@ fn recolor_svg_icon(
     let svg_bytes = std::fs::read(src).map_err(|e| format!("failed to read SVG: {}", e))?;
 
     let palette = extract_svg_palette(&svg_bytes)?;
-    eprintln!("  DEBUG [recolor_svg]: palette.len()={}", palette.len());
     if palette.is_empty() {
         return copy_icon_as_is(src, output_dir);
     }
 
     let mappings = build_svg_anchor_mappings(&palette, theme_data);
-    eprintln!("  DEBUG [recolor_svg]: mappings.len()={}", mappings.len());
+    if mappings.is_empty() {
+        return copy_icon_as_is(src, output_dir);
+    }
+
     let _ = verbose;
 
     let recolored = transfer_svg_colors(&svg_bytes, &mappings)?;
@@ -712,7 +714,7 @@ fn rewrite_element_attrs(
             .map(|v| v.as_ref().to_string())
             .unwrap_or_default();
 
-        if key == "fill" || key == "stroke" {
+        if key == "fill" || key == "stroke" || key == "stop-color" {
             if let Some(replacement) = mappings.get(&value_unescaped) {
                 new_attrs.push((key, replacement.clone()));
                 continue;
