@@ -31,9 +31,7 @@ pub fn upgrade() -> Result<(), String> {
     }
 
     let stdout = String::from_utf8_lossy(&upgrade.stdout);
-    if stdout.contains("Already up-to-date") {
-        println!("akspraypaint is already up-to-date.");
-    } else {
+    if !stdout.trim().is_empty() {
         println!("{}", stdout.trim());
     }
 
