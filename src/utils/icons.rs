@@ -317,32 +317,80 @@ pub fn recolor_icons(theme_name: &str, verbose: bool) -> Result<String, String> 
 
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_symlink() {
-                continue;
-            }
-            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-            if stem.ends_with("_recolored") {
-                continue;
-            }
 
-            let result: Result<(), String> = if ext == "svg" {
-                recolor_svg_icon(&path, &theme_data, &output_dir, verbose).map(|_| ())
-            } else if matches!(ext, "png" | "jpg" | "jpeg" | "webp" | "bmp") {
-                recolor_raster_icon(&path, &theme_data, &output_dir).map(|_| ())
+            if path.is_dir() {
+                // Size dir contains category subdirs (e.g. 16x16/places/)
+                // Find which subdir this is and process it
+                let sub_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+                let sub_out = out_size.join(sub_name);
+                std::fs::create_dir_all(&sub_out).ok();
+
+                let src_sub = size_base.join(sub_name);
+                let entries_sub = match std::fs::read_dir(&src_sub) {
+                    Ok(e) => e,
+                    Err(_) => continue,
+                };
+                for entry_sub in entries_sub.flatten() {
+                    let file_path = entry_sub.path();
+                    if file_path.is_symlink() {
+                        continue;
+                    }
+                    let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                    let stem = file_path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                    if stem.ends_with("_recolored") {
+                        continue;
+                    }
+
+                    let result: Result<(), String> = if ext == "svg" {
+                        recolor_svg_icon(&file_path, &theme_data, &output_dir, verbose)
+                            .map(|_| ())
+                    } else if matches!(ext, "png" | "jpg" | "jpeg" | "webp" | "bmp") {
+                        recolor_raster_icon(&file_path, &theme_data, &output_dir).map(|_| ())
+                    } else {
+                        let dst = sub_out.join(file_path.file_name().unwrap());
+                        std::fs::copy(&file_path, &dst)
+                            .map(|_| ())
+                            .map_err(|e| e.to_string())
+                    };
+
+                    match result {
+                        Ok(_) => total += 1,
+                        Err(e) => {
+                            errors += 1;
+                            if verbose {
+                                eprintln!("  [{}] {}: {}", ext, file_path.display(), e);
+                            }
+                        }
+                    }
+                }
+            } else if path.is_symlink() {
+                continue;
             } else {
-                let dst = out_size.join(path.file_name().unwrap());
-                std::fs::copy(&path, &dst)
-                    .map(|_| ())
-                    .map_err(|e| e.to_string())
-            };
+                // Flat file directly in size dir (e.g. 16x16/icon.png)
+                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                if stem.ends_with("_recolored") {
+                    continue;
+                }
 
-            match result {
-                Ok(_) => total += 1,
-                Err(e) => {
-                    errors += 1;
-                    if verbose {
-                        eprintln!("  [{}] {}: {}", ext, path.display(), e);
+                let result: Result<(), String> = if ext == "svg" {
+                    recolor_svg_icon(&path, &theme_data, &output_dir, verbose).map(|_| ())
+                } else if matches!(ext, "png" | "jpg" | "jpeg" | "webp" | "bmp") {
+                    recolor_raster_icon(&path, &theme_data, &output_dir).map(|_| ())
+                } else {
+                    let dst = out_size.join(path.file_name().unwrap());
+                    std::fs::copy(&path, &dst)
+                        .map(|_| ())
+                        .map_err(|e| e.to_string())
+                };
+
+                match result {
+                    Ok(_) => total += 1,
+                    Err(e) => {
+                        errors += 1;
+                        if verbose {
+                            eprintln!("  [{}] {}: {}", ext, path.display(), e);
+                        }
                     }
                 }
             }
@@ -983,5 +1031,73 @@ source = \"custom\"";
         assert_eq!(extract_toml_string(content, "builtin"), Some("Eldritch".to_string()));
         assert_eq!(extract_toml_string(content, "custom_palette"), Some("Purple Haze".to_string()));
         assert_eq!(extract_toml_string(content, "source"), Some("custom".to_string()));
+    }
+
+    /// Regression test: sized directories (16x16, 24x24, etc.) contain category
+    /// subdirs (places/, devices/, etc.) — not flat files. The per-size loop must
+    /// recurse into these subdirs, not treat the directory itself as a file and
+    /// error with "neither a regular file nor a symlink". This bug silently dropped
+    /// entire categories from the output theme at every raster size.
+    #[test]
+    fn test_sized_dir_with_category_subdirs_does_not_error() {
+        let tmp_src = std::env::temp_dir().join("akspraypaint_test_src");
+        let tmp_out = std::env::temp_dir().join("akspraypaint_test_out");
+
+        // Build a fixture mimicking Adwaita's structure:
+        // 16x16/places/test.svg
+        // 16x16/devices/test.png
+        let src_16 = tmp_src.join("16x16");
+        let places_dir = src_16.join("places");
+        let devices_dir = src_16.join("devices");
+        std::fs::create_dir_all(&places_dir).unwrap();
+        std::fs::create_dir_all(&devices_dir).unwrap();
+
+        // Write a minimal valid SVG (must have XML declaration + svg root)
+        let svg_content = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\">\n  <rect width=\"16\" height=\"16\" fill=\"#62a0ea\"/>\n</svg>\n";
+        std::fs::write(places_dir.join("test.svg"), svg_content).unwrap();
+        std::fs::write(devices_dir.join("test.png"), &[0; 4]).unwrap(); // minimal 4-byte PNG
+
+        std::fs::create_dir_all(&tmp_out).unwrap();
+
+        // Walk the source the same way recolor_icons does for sized dirs:
+        // Entry is a DIR (not a file) — must recurse, not error
+        let size_base = &src_16;
+        let out_size = tmp_out.join("16x16");
+        std::fs::create_dir_all(&out_size).unwrap();
+
+        let mut processed = 0usize;
+        let entries = std::fs::read_dir(size_base).unwrap();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            assert!(path.is_dir(), "places/ and devices/ must be dirs in fixture");
+            let sub_name = path.file_name().unwrap().to_str().unwrap();
+            let sub_out = out_size.join(sub_name);
+            std::fs::create_dir_all(&sub_out).unwrap();
+
+            let src_sub = size_base.join(sub_name);
+            let entries_sub = std::fs::read_dir(&src_sub).unwrap();
+            for entry_sub in entries_sub.flatten() {
+                let file_path = entry_sub.path();
+                if file_path.is_symlink() || file_path.is_dir() {
+                    continue;
+                }
+                // Must NOT reach here with the directory itself — that was the bug
+                let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                if ext == "svg" || ext == "png" {
+                    std::fs::copy(&file_path, sub_out.join(file_path.file_name().unwrap())).unwrap();
+                    processed += 1;
+                }
+            }
+        }
+
+        // If the bug existed, we'd have panicked above with
+        // "the source path is neither a regular file nor a symlink"
+        assert_eq!(processed, 2, "should have copied both test.svg and test.png");
+        assert!(tmp_out.join("16x16/places/test.svg").exists());
+        assert!(tmp_out.join("16x16/devices/test.png").exists());
+
+        // Cleanup
+        std::fs::remove_dir_all(&tmp_src).ok();
+        std::fs::remove_dir_all(&tmp_out).ok();
     }
 }
