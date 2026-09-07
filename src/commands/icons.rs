@@ -1,3 +1,4 @@
+use crate::utils::icons::find_best_base_theme;
 use crate::utils::{icons, theme};
 use inotify::{EventMask, Inotify, WatchMask};
 use std::time::{Duration, Instant};
@@ -5,8 +6,7 @@ use std::time::{Duration, Instant};
 const DEBOUNCE_MS: u64 = 500;
 
 pub fn recolor(verbose: bool) -> Result<(), String> {
-    let base_theme = icons::get_active_icon_theme()
-        .unwrap_or_else(|| "Adwaita".to_string());
+    let base_theme = find_best_base_theme();
     eprintln!("Detected icon theme: {}", base_theme);
 
     let hash = icons::recolor_icons(&base_theme, verbose)?;
@@ -26,8 +26,7 @@ pub fn watch() -> Result<(), String> {
     let noctalia_dir = theme::noctalia_dir()
         .ok_or_else(|| "noctalia config directory not found".to_string())?;
 
-    let base_theme = icons::get_active_icon_theme()
-        .unwrap_or_else(|| "Adwaita".to_string());
+    let base_theme = icons::find_best_base_theme();
 
     eprintln!("Icon theme watch started");
     eprintln!("Base theme: {}", base_theme);

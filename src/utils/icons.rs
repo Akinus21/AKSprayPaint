@@ -64,6 +64,49 @@ pub fn get_active_icon_theme() -> Option<String> {
     Some(stdout.trim_matches('\'').to_string())
 }
 
+/// Pick the best available icon theme to use as the source for recoloring.
+/// Searches in priority order: the currently active gsettings theme (if it
+/// exists on disk), then Adwaita, then the first theme found on disk.
+pub fn find_best_base_theme() -> String {
+    // Try the currently-active theme first
+    if let Some(active) = get_active_icon_theme() {
+        if !active.eq_ignore_ascii_case("PurpleHaze")
+            && find_icon_theme_root(&active).is_some()
+        {
+            return active;
+        }
+    }
+    // Fall back to Adwaita if it's installed
+    if find_icon_theme_root("Adwaita").is_some() {
+        return "Adwaita".to_string();
+    }
+    // Last resort: first theme found on disk
+    let search_dirs: Vec<std::path::PathBuf> = std::iter::empty()
+        .chain(dirs::data_dir().map(|p| p.join("icons")))
+        .chain(
+            ["/usr/share/icons", "/usr/local/share/icons"]
+                .iter()
+                .map(std::path::PathBuf::from),
+        )
+        .filter_map(|p| if p.exists() { Some(p) } else { None })
+        .collect();
+
+    for dir in search_dirs {
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                if entry.path().is_dir() {
+                    if let Some(name) = entry.path().file_name().and_then(|n| n.to_str()) {
+                        if name != "icons" && name != "CursorThemes" {
+                            return name.to_string();
+                        }
+                    }
+                }
+            }
+        }
+    }
+    "Adwaita".to_string()
+}
+
 /// Find the root directory of an installed icon theme by name.
 pub fn find_icon_theme_root(name: &str) -> Option<PathBuf> {
     let search_dirs: Vec<PathBuf> = std::iter::empty()
