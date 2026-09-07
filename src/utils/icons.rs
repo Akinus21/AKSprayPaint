@@ -756,14 +756,15 @@ fn rewrite_style_value(
 
 /// Apply the named icon theme.
 /// On GNOME: runs gsettings + gtk-update-icon-cache.
-/// On other WMs (Niri, etc.): writes the theme files but skips GTK theme application
-/// (icon-theme is a GNOME-specific gsettings key with no equivalent on other WMs).
+/// On other WMs (Niri, etc.): writes gtk-icon-theme-name to
+/// ~/.config/gtk-3.0/settings.ini and gtk-4.0/settings.ini, then
+/// runs gtk-update-icon-cache.
 pub fn apply_icon_theme(theme_name: &str) -> Result<(), String> {
-    // Only apply via gsettings on GNOME — other WMs don't have this gsettings key
-    if std::env::var("GNOME_DESKTOP_SESSION_ID").is_ok()
+    let is_gnome = std::env::var("GNOME_DESKTOP_SESSION_ID").is_ok()
         || std::env::var("XDG_CURRENT_DESKTOP")
-            .is_ok_and(|v| v.to_lowercase().contains("gnome"))
-    {
+            .is_ok_and(|v| v.to_lowercase().contains("gnome"));
+
+    if is_gnome {
         let output = Command::new("gsettings")
             .args(["set", "org.gnome.desktop.interface", "icon-theme", theme_name])
             .output()
@@ -774,6 +775,9 @@ pub fn apply_icon_theme(theme_name: &str) -> Result<(), String> {
                 String::from_utf8_lossy(&output.stderr)
             ));
         }
+    } else {
+        // Niri / other WMs: write gtk-icon-theme-name to the GTK config files
+        write_gtk_icon_theme(theme_name)?;
     }
 
     let output_dir = icon_theme_dir_for(theme_name);
@@ -792,9 +796,52 @@ pub fn apply_icon_theme(theme_name: &str) -> Result<(), String> {
         );
     }
 
-    // Note: We intentionally do NOT restart Nemo here. `nemo --quit` can terminate
-    // the user's GNOME session on some systems. The user should restart Nemo
-    // manually after icon recoloring if needed: `nemo -q; nemo &`
+    Ok(())
+}
+
+/// Write gtk-icon-theme-name into ~/.config/gtk-3.0/settings.ini and
+/// ~/.config/gtk-4.0/settings.ini. Creates the files/directories if needed.
+fn write_gtk_icon_theme(theme_name: &str) -> Result<(), String> {
+    let home = dirs::home_dir().ok_or("could not find home directory")?;
+
+    for ini_path in [
+        home.join(".config").join("gtk-3.0").join("settings.ini"),
+        home.join(".config").join("gtk-4.0").join("settings.ini"),
+    ] {
+        let content = if ini_path.is_file() {
+            std::fs::read_to_string(&ini_path)
+                .map_err(|e| format!("failed to read {}: {}", ini_path.display(), e))?
+        } else {
+            String::from("[Settings]
+")
+        };
+
+        let new_line = format!("gtk-icon-theme-name={}", theme_name);
+        let updated = if content.lines().any(|l| l.starts_with("gtk-icon-theme-name=")) {
+            content
+                .lines()
+                .map(|l| {
+                    if l.starts_with("gtk-icon-theme-name=") {
+                        &new_line
+                    } else {
+                        l
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("
+")
+        } else {
+            format!("{}
+{}", content.trim_end(), new_line)
+        };
+
+        if let Some(parent) = ini_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("failed to create {}: {}", parent.display(), e))?;
+        }
+        std::fs::write(&ini_path, updated)
+            .map_err(|e| format!("failed to write {}: {}", ini_path.display(), e))?;
+    }
 
     Ok(())
 }
