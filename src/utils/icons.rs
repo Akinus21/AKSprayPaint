@@ -820,6 +820,17 @@ pub fn apply_icon_theme(theme_name: &str) -> Result<(), String> {
         );
     }
 
+    // Restart Nemo to force icon refresh (Nemo caches icons in-memory)
+    let nemo_quit = Command::new("nemo")
+        .args(["--quit"])
+        .output();
+    if nemo_quit.as_ref().map(|o| o.status.success()).unwrap_or(false) {
+        std::thread::spawn(|| {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            let _ = Command::new("nemo").spawn();
+        });
+    }
+
     Ok(())
 }
 
