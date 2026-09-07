@@ -1,0 +1,211 @@
+//! Niri window border color recoloring.
+//!
+//! Niri's config supports an `include "./noctalia.kdl"` directive.
+//! We write theme-aware colors to `~/.config/niri/noctalia.kdl` and
+//! send `niri msgctl reload-config` to apply them without restarting.
+
+use std::path::PathBuf;
+
+/// Path to the generated per-theme noctalia.kdl
+pub fn noctalia_kdl_path() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("~"))
+        .join(".config/niri/noctalia.kdl")
+}
+
+/// Path to Noctalia's colors.json
+fn noctalia_colors_path() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("~"))
+        .join(".config/noctalia/colors.json")
+}
+
+/// Apply niri border colors from the current Noctalia colors.json.
+/// Reads primary/surface/surfaceVariant/error from colors.json and
+/// writes the generated noctalia.kdl, then signals niri to reload.
+pub fn apply_niri_colors() -> Result<(), String> {
+    let colors_path = noctalia_colors_path();
+    let content = std::fs::read_to_string(&colors_path)
+        .map_err(|e| format!("reading {}: {}", colors_path.display(), e))?;
+
+    let json: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| format!("parsing colors.json: {}", e))?;
+
+    let get_hex = |key: &str| -> Result<String, String> {
+        json.get(key)
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim_start_matches('#').to_string())
+            .ok_or_else(|| format!("missing or invalid color: {}", key))
+    };
+
+    let primary = get_hex("mPrimary")?;
+    let surface = get_hex("mSurface")?;
+    let surface_variant = get_hex("mSurfaceVariant")?;
+    let error = get_hex("mError")?;
+
+    let niri_colors = NoctaliaNiriColors {
+        primary: format!("#{}", primary),
+        surface: format!("#{}", surface),
+        surface_variant: format!("#{}", surface_variant),
+        urgent: format!("#{}", error),
+        primary_alpha: format!("{}80", primary),
+    };
+
+    let theme_name = crate::utils::icons::get_current_theme_name()
+        .unwrap_or_else(|_| "Unknown".to_string());
+
+    apply_niri_theme(&theme_name, &niri_colors)
+}
+
+/// Apply the given theme colors to niri's border/focus-ring via the
+/// generated noctalia.kdl file, then signal niri to reload.
+pub fn apply_niri_theme(theme_name: &str, colors: &NoctaliaNiriColors) -> Result<(), String> {
+    let content = render_noctalia_kdl(theme_name, colors);
+    let path = noctalia_kdl_path();
+
+    // Ensure parent directory exists
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("creating niri config dir: {}", e))?;
+    }
+
+    std::fs::write(&path, content)
+        .map_err(|e| format!("writing {}: {}", path.display(), e))?;
+
+    reload_niri_config()
+}
+
+/// Send SIGUSR1 to the niri process to trigger config reload.
+/// niri handles this signal internally to reload without restart.
+pub fn reload_niri_config() -> Result<(), String> {
+    // Find niri's PID via its well-known D-Bus or pidfile, or fall back to pgrep
+    let pid = find_niri_pid().ok_or("niri process not found")?;
+
+    std::process::Command::new("kill")
+        .args(["-USR1", &pid])
+        .output()
+        .map_err(|e| format!("kill -USR1 niri: {}", e))?;
+
+    Ok(())
+}
+
+fn find_niri_pid() -> Option<String> {
+    // Try pgrep first — simplest and most reliable
+    let output = std::process::Command::new("pgrep")
+        .args(["-x", "niri"])
+        .output()
+        .ok()?;
+
+    if output.status.success() {
+        let pid = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !pid.is_empty() {
+            return Some(pid);
+        }
+    }
+
+    None
+}
+
+/// Colors extracted from a NoctaliaTheme for niri's UI elements
+#[derive(Debug, Clone)]
+pub struct NoctaliaNiriColors {
+    /// Primary accent color (mPrimary) — used for active borders/focus rings
+    pub primary: String,
+    /// Surface background (mSurface) — used for inactive borders
+    pub surface: String,
+    /// Error/urgent color (mError)
+    pub urgent: String,
+    /// Primary with alpha for insert-hint
+    pub primary_alpha: String,
+    /// Surface variant for inactive tab indicator
+    pub surface_variant: String,
+}
+
+impl NoctaliaNiriColors {
+    #[allow(dead_code)]
+    pub fn from_noctalia_colors(primary: &str, surface: &str, surface_variant: &str, urgent: &str) -> Self {
+        // Add ~80% alpha to primary for insert-hint
+        let primary_alpha = format!("{}80", primary.trim_start_matches('#'));
+        Self {
+            primary: primary.to_string(),
+            surface: surface.to_string(),
+            urgent: urgent.to_string(),
+            primary_alpha,
+            surface_variant: surface_variant.to_string(),
+        }
+    }
+}
+
+/// Render the noctalia.kdl file content with the given theme name and colors.
+fn render_noctalia_kdl(theme_name: &str, colors: &NoctaliaNiriColors) -> String {
+    format!(
+        r#"// Auto-generated by AKSprayPaint — do not edit manually
+// Theme: {theme_name}
+
+layout {{
+
+    focus-ring {{
+        active-color   "{primary}"
+        inactive-color "{surface}"
+        urgent-color   "{urgent}"
+    }}
+
+    border {{
+        active-color   "{primary}"
+        inactive-color "{surface}"
+        urgent-color   "{urgent}"
+    }}
+
+    shadow {{
+        color "{surface}70"
+    }}
+
+    tab-indicator {{
+        active-color   "{primary}"
+        inactive-color "{surface_variant}"
+        urgent-color   "{urgent}"
+    }}
+
+    insert-hint {{
+        color "{primary_alpha}"
+    }}
+}}
+
+recent-windows {{
+    highlight {{
+        active-color "{primary}"
+        urgent-color "{urgent}"
+    }}
+}}
+"#,
+        theme_name = theme_name,
+        primary = colors.primary,
+        surface = colors.surface,
+        surface_variant = colors.surface_variant,
+        urgent = colors.urgent,
+        primary_alpha = colors.primary_alpha,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_render_noctalia_kdl() {
+        let colors = NoctaliaNiriColors {
+            primary: "#a8e000".to_string(),
+            surface: "#000000".to_string(),
+            urgent: "#ff3c4e".to_string(),
+            primary_alpha: "a8e00080".to_string(),
+            surface_variant: "#1f0e2b".to_string(),
+        };
+        let result = render_noctalia_kdl("Purple Haze", &colors);
+        assert!(result.contains("active-color   \"#a8e000\""));
+        assert!(result.contains("inactive-color \"#000000\""));
+        assert!(result.contains("urgent-color   \"#ff3c4e\""));
+        assert!(result.contains("shadow {"));
+        assert!(result.contains("insert-hint {"));
+        assert!(result.contains("recent-windows {"));
+    }
+}

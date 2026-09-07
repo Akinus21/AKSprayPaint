@@ -11,6 +11,12 @@ pub fn recolor(verbose: bool) -> Result<(), String> {
 
     let hash = icons::recolor_icons(&theme_name, verbose)?;
     icons::apply_icon_theme(&theme_name)?;
+
+    // Also apply niri border colors
+    if let Err(e) = crate::utils::niri::apply_niri_colors() {
+        eprintln!("warning: niri border update failed: {}", e);
+    }
+
     eprintln!(
         "Icon theme '{}' applied ({} icons cached)",
         theme_name,
