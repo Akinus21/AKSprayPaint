@@ -372,17 +372,6 @@ pub fn recolor_icons(theme_name: &str, verbose: bool) -> Result<String, String> 
 
     generate_index_theme(&output_dir, theme_name, &base_theme, &categories)?;
 
-    // Also copy recolored icons into the hicolor theme directory.
-    // Since hicolor is the universal fallback for icon themes, any theme
-    // that inherits from it (including Purple_Haze) will find these icons
-    // when no other theme provides them. This is the mechanism that makes
-    // the recolored icons appear in Nemo and other apps.
-    if let Err(e) = install_hicolor_fallback(&output_dir, &categories) {
-        eprintln!("warning: failed to update hicolor fallback icons: {}", e);
-    } else if verbose {
-        eprintln!("Hicolor fallback icons updated");
-    }
-
     if verbose {
         eprintln!("Recolored {} icons ({} errors)", total, errors);
     }
@@ -877,119 +866,6 @@ fn write_gtk_icon_theme(theme_name: &str) -> Result<(), String> {
         std::fs::write(&ini_path, updated)
             .map_err(|e| format!("failed to write {}: {}", ini_path.display(), e))?;
     }
-
-    Ok(())
-}
-
-// ------------------------------------------------------------------------------------------------------------------------------------------
-// Hicolor fallback installation
-// ------------------------------------------------------------------------------------------------------------------------------------------
-
-/// Copy all recolored icons from the output theme into the user's hicolor directory.
-/// This overwrites hicolor's default icons with the recolored versions, so that
-/// any theme inheriting from hicolor (including our recolored themes) displays the
-/// correct colors even when the app queries hicolor directly.
-///
-/// The hicolor directory is stored in ~/.local/share/icons/hicolor (not system /usr/share).
-/// This function is idempotent — it can be called on every recolor without issue.
-fn install_hicolor_fallback(output_theme_dir: &Path, categories: &[String]) -> Result<(), String> {
-    let icons_base = dirs::data_dir()
-        .ok_or_else(|| "data directory not found".to_string())?
-        .join("icons");
-
-    let hicolor_dir = icons_base.join("hicolor");
-
-    // Ensure hicolor has the scalable subdirectory structure
-    let hicolor_scalable = hicolor_dir.join("scalable");
-    std::fs::create_dir_all(&hicolor_scalable)
-        .map_err(|e| format!("failed to create {}: {}", hicolor_scalable.display(), e))?;
-
-    for cat in categories {
-        let src_cat_dir = output_theme_dir.join("scalable").join(cat);
-        let dst_cat_dir = hicolor_scalable.join(cat);
-
-        if !src_cat_dir.is_dir() {
-            continue;
-        }
-
-        std::fs::create_dir_all(&dst_cat_dir)
-            .map_err(|e| format!("failed to create {}: {}", dst_cat_dir.display(), e))?;
-
-        let entries = match std::fs::read_dir(&src_cat_dir) {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-
-        for entry in entries.flatten() {
-            let src_path = entry.path();
-            if !src_path.is_file() {
-                continue;
-            }
-            let name = src_path.file_name().unwrap();
-            let dst_path = dst_cat_dir.join(name);
-
-            // Copy recolored icon over hicolor's default
-            if let Err(e) = std::fs::copy(&src_path, &dst_path) {
-                eprintln!(
-                    "warning: failed to copy {} to hicolor: {}",
-                    name.to_string_lossy(),
-                    e
-                );
-            }
-        }
-    }
-
-    // Update the hicolor index.theme if it exists, or create one
-    update_hicolor_index(&hicolor_dir, categories)?;
-
-    // Run gtk-update-icon-cache on hicolor to rebuild its cache with new icons
-    let cache_output = std::process::Command::new("gtk-update-icon-cache")
-        .args(["--force", &hicolor_dir.to_string_lossy()])
-        .output();
-
-    if let Err(e) = cache_output {
-        eprintln!(
-            "warning: gtk-update-icon-cache for hicolor failed: {} (non-fatal)",
-            e
-        );
-    } else if !cache_output.unwrap().status.success() {
-        eprintln!(
-            "warning: gtk-update-icon-cache for hicolor returned non-zero (non-fatal)"
-        );
-    }
-
-    Ok(())
-}
-
-/// Update or create the hicolor index.theme to declare the scalable subdirectories.
-fn update_hicolor_index(hicolor_dir: &Path, categories: &[String]) -> Result<(), String> {
-    let index_path = hicolor_dir.join("index.theme");
-
-    // Build the Directories= line
-    let dir_entries: String = categories
-        .iter()
-        .map(|cat| format!("scalable/{},", cat))
-        .collect();
-    let dir_entries = dir_entries.trim_end_matches(',');
-
-    // Build per-directory stanzas
-    let mut stanzas = String::new();
-    for cat in categories {
-        stanzas.push_str(&format!(
-            "[scalable/{}]\n             Size=48\n             Type=Scalable\n             MinSize=1\n             MaxSize=512\n             Context={}\n\n",
-            cat,
-            capitalize(cat)
-        ));
-    }
-
-    let index_content = format!(
-        "[Icon Theme]\n         Name=hicolor\n         Comment=Default fallback icon theme\n         Directories={}\n\n         {}\n",
-        dir_entries,
-        stanzas.trim()
-    );
-
-    std::fs::write(&index_path, index_content)
-        .map_err(|e| format!("failed to write {}: {}", index_path.display(), e))?;
 
     Ok(())
 }
