@@ -754,17 +754,26 @@ fn rewrite_style_value(
 // Apply theme
 // ------------------------------------------------------------------------------------------------------------------------------------------
 
-/// Apply the named icon theme via gsettings, then rebuild the GTK icon cache.
+/// Apply the named icon theme.
+/// On GNOME: runs gsettings + gtk-update-icon-cache.
+/// On other WMs (Niri, etc.): writes the theme files but skips GTK theme application
+/// (icon-theme is a GNOME-specific gsettings key with no equivalent on other WMs).
 pub fn apply_icon_theme(theme_name: &str) -> Result<(), String> {
-    let output = Command::new("gsettings")
-        .args(["set", "org.gnome.desktop.interface", "icon-theme", theme_name])
-        .output()
-        .map_err(|e| format!("failed to run gsettings: {}", e))?;
-    if !output.status.success() {
-        return Err(format!(
-            "gsettings failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
+    // Only apply via gsettings on GNOME — other WMs don't have this gsettings key
+    if std::env::var("GNOME_DESKTOP_SESSION_ID").is_ok()
+        || std::env::var("XDG_CURRENT_DESKTOP")
+            .is_ok_and(|v| v.to_lowercase().contains("gnome"))
+    {
+        let output = Command::new("gsettings")
+            .args(["set", "org.gnome.desktop.interface", "icon-theme", theme_name])
+            .output()
+            .map_err(|e| format!("failed to run gsettings: {}", e))?;
+        if !output.status.success() {
+            return Err(format!(
+                "gsettings failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
     }
 
     let output_dir = icon_theme_dir_for(theme_name);

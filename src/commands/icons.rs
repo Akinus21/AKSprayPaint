@@ -10,11 +10,13 @@ pub fn recolor(verbose: bool) -> Result<(), String> {
     eprintln!("Icon theme: {}", theme_name);
 
     let hash = icons::recolor_icons(&theme_name, verbose)?;
-    icons::apply_icon_theme(&theme_name)?;
+    if let Err(e) = icons::apply_icon_theme(&theme_name) {
+        eprintln!("warning: icon theme apply failed (non-fatal): {}", e);
+    }
 
-    // Also apply niri border colors
+    // Also apply niri border colors (non-fatal — niri config reload can crash on bad kdl)
     if let Err(e) = crate::utils::niri::apply_niri_colors() {
-        eprintln!("warning: niri border update failed: {}", e);
+        eprintln!("warning: niri border update failed (non-fatal): {}", e);
     }
 
     eprintln!(
@@ -86,7 +88,7 @@ pub fn watch() -> Result<(), String> {
                     match icons::recolor_icons(&theme_name, false) {
                         Ok(hash) => {
                             if let Err(e) = icons::apply_icon_theme(&theme_name) {
-                                eprintln!("Error applying icon theme: {}", e);
+                                eprintln!("warning: icon theme apply failed (non-fatal): {}", e);
                             } else {
                                 eprintln!(
                                     "Icon theme '{}' applied ({})",
