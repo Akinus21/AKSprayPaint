@@ -411,7 +411,7 @@ fn generate_index_theme(
     }
 
     let index_content = format!(
-        "[Icon Theme]\n         Name={}\n         Comment=Recolored by AKSprayPaint from {}\n         DisplayName={}\n         Inherits=hicolor\n         Directories={}\n         Example=folder\n         FollowsNav=True\n         \n         {}\n",
+        "[Icon Theme]\n         Name={}\n         Comment=Recolored by AKSprayPaint from {}\n         DisplayName={}\n         Inherits=Adwaita\n         Directories={}\n         Example=folder\n         FollowsNav=True\n         \n         {}\n",
         theme_name,
         base_name,
         theme_name.replace('_', " "),

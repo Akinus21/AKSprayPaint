@@ -1,4 +1,5 @@
 mod commands;
+mod gtkd;
 mod utils;
 
 use clap::{Parser, Subcommand};
@@ -53,6 +54,10 @@ enum Command {
     Clean,
     /// Upgrade akspraypaint via Homebrew
     Upgrade,
+    /// Open the GTK bridge daemon config in $EDITOR
+    Config,
+    /// Run the GTK bridge daemon ( Akspraypaint-gtkd)
+    GtKd,
 }
 
 #[derive(Subcommand)]
@@ -69,7 +74,7 @@ enum IconsSubcommand {
     Clean,
 }
 
-fn main() {
+fn main() -> Result<(), String> {
     let cli = Cli::parse();
 
     if cli.disable {
@@ -77,7 +82,7 @@ fn main() {
             eprintln!("Error: {}", e);
             std::process::exit(1);
         }
-        return;
+        return Ok(());
     }
 
     let command = match cli.command {
@@ -103,11 +108,35 @@ fn main() {
         Command::Set { path } => commands::set::set(&path),
         Command::Status => commands::set::status(),
         Command::Clean => commands::set::clean(),
-        Command::Upgrade => commands::upgrade::upgrade(),
+        Command::Upgrade => {
+            commands::upgrade::upgrade();
+            Ok(())
+        }
+        Command::Config => {
+            let path = gtkd::config::default_path();
+            let _ = gtkd::config::GtkBridgeConfig::load_or_create(&path);
+            let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nano".to_string());
+            let result = std::process::Command::new(&editor)
+                .arg(&path)
+                .status();
+            if let Err(e) = result {
+                eprintln!("failed to open editor: {}", e);
+            }
+            Ok(())
+        }
+        Command::GtKd => {
+            let config = match gtkd::config::GtkBridgeConfig::load_or_create(
+                &gtkd::config::default_path(),
+            ) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("[gtkd] config error: {}", e);
+                    return Ok(());
+                }
+            };
+            gtkd::daemon::run(config)
+        }
     };
 
-    if let Err(e) = result {
-        eprintln!("Error: {}", e);
-        std::process::exit(1);
-    }
+    result
 }

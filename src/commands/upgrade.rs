@@ -1,17 +1,21 @@
 use std::process::Command;
 
 /// Upgrade akspraypaint via Homebrew.
-pub fn upgrade() -> Result<(), String> {
+pub fn upgrade() {
     println!("Checking for updates...");
 
-    let update = Command::new("brew")
-        .args(["update"])
-        .output()
-        .map_err(|e| format!("failed to run brew update: {}", e))?;
+    let update = match Command::new("brew").args(["update"]).output() {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("failed to run brew update: {}", e);
+            return;
+        }
+    };
 
     if !update.status.success() {
         let stderr = String::from_utf8_lossy(&update.stderr);
-        return Err(format!("brew update failed: {}", stderr));
+        eprintln!("brew update failed: {}", stderr);
+        return;
     }
 
     if !update.stdout.is_empty() {
@@ -20,16 +24,20 @@ pub fn upgrade() -> Result<(), String> {
 
     println!("Upgrading akspraypaint...");
 
-    let upgrade = Command::new("brew")
-        .args(["upgrade", "akspraypaint"])
-        .output()
-        .map_err(|e| format!("failed to run brew upgrade: {}", e))?;
+    let upgrade = match Command::new("brew").args(["upgrade", "akspraypaint"]).output() {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("failed to run brew upgrade: {}", e);
+            return;
+        }
+    };
 
     let stdout = String::from_utf8_lossy(&upgrade.stdout);
     let stderr = String::from_utf8_lossy(&upgrade.stderr);
 
     if !upgrade.status.success() {
-        return Err(format!("brew upgrade failed:\n{}{}", stdout, stderr));
+        eprintln!("brew upgrade failed:\n{}{}", stdout, stderr);
+        return;
     }
 
     if stdout.contains("Upgraded 1") {
@@ -39,6 +47,4 @@ pub fn upgrade() -> Result<(), String> {
     } else if !stdout.is_empty() {
         println!("{}", stdout.trim());
     }
-
-    Ok(())
 }
