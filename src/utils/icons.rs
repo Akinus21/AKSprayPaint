@@ -613,22 +613,14 @@ fn recolor_svg_icon(
     let svg_bytes = std::fs::read(src).map_err(|e| format!("failed to read SVG: {}", e))?;
 
     let palette = extract_svg_palette(&svg_bytes)?;
+    eprintln!("  DEBUG [recolor_svg]: palette.len()={}", palette.len());
     if palette.is_empty() {
         return copy_icon_as_is(src, output_dir);
     }
 
     let mappings = build_svg_anchor_mappings(&palette, theme_data);
-    if mappings.is_empty() {
-        eprintln!("  DEBUG: no mappings (palette had {} colors, theme has 7 anchors)", palette.len());
-        return copy_icon_as_is(src, output_dir);
-    }
-
-    if verbose {
-        eprintln!("  DEBUG: source palette: {:?}", palette);
-        for (src_hex, tgt_hex) in &mappings {
-            eprintln!("  {} → {}", src_hex, tgt_hex);
-        }
-    }
+    eprintln!("  DEBUG [recolor_svg]: mappings.len()={}", mappings.len());
+    let _ = verbose;
 
     let recolored = transfer_svg_colors(&svg_bytes, &mappings)?;
 
