@@ -358,7 +358,7 @@ pub fn recolor_icons(theme_name: &str, verbose: bool) -> Result<String, String> 
                 continue;
             }
 
-            match recolor_svg_icon(&path, &theme_data, &output_dir, verbose) {
+            match recolor_svg_icon(&path, &theme_data, &output_dir, cat, verbose) {
                 Ok(_) => total += 1,
                 Err(e) => {
                     errors += 1;
@@ -616,18 +616,19 @@ fn recolor_svg_icon(
     src: &Path,
     theme_data: &NoctaliaTheme,
     output_dir: &Path,
+    category: &str,
     verbose: bool,
 ) -> Result<PathBuf, String> {
     let svg_bytes = std::fs::read(src).map_err(|e| format!("failed to read SVG: {}", e))?;
 
     let palette = extract_svg_palette(&svg_bytes)?;
     if palette.is_empty() {
-        return copy_icon_as_is(src, output_dir);
+        return copy_icon_as_is(src, output_dir, category);
     }
 
     let mappings = build_svg_anchor_mappings(&palette, theme_data);
     if mappings.is_empty() {
-        return copy_icon_as_is(src, output_dir);
+        return copy_icon_as_is(src, output_dir, category);
     }
 
     let _ = verbose;
@@ -635,25 +636,22 @@ fn recolor_svg_icon(
     let recolored = transfer_svg_colors(&svg_bytes, &mappings)?;
 
     let name = src.file_name().unwrap();
-    let size_dir = src
-        .parent()
-        .and_then(|p| p.file_name())
-        .unwrap_or(".".as_ref());
-    let out_dir = output_dir.join(size_dir);
-    std::fs::create_dir_all(&out_dir).map_err(|e| format!("failed to create dir: {}", e))?;
+    // Always write to scalable/<category>/ — the source icons live under
+    // <theme>/scalable/<category>/ and that path structure must match what
+    // index.theme's Directories= key declares.
+    let out_dir = output_dir.join("scalable").join(category);
+    std::fs::create_dir_all(&out_dir)
+        .map_err(|e| format!("failed to create dir {}: {}", out_dir.display(), e))?;
     let out_path = out_dir.join(name);
-    std::fs::write(&out_path, recolored).map_err(|e| format!("failed to write: {}", e))?;
+    std::fs::write(&out_path, recolored)
+        .map_err(|e| format!("failed to write {}: {}", out_path.display(), e))?;
 
     Ok(out_path)
 }
 
-fn copy_icon_as_is(src: &Path, output_dir: &Path) -> Result<PathBuf, String> {
+fn copy_icon_as_is(src: &Path, output_dir: &Path, category: &str) -> Result<PathBuf, String> {
     let name = src.file_name().unwrap();
-    let size_dir = src
-        .parent()
-        .and_then(|p| p.file_name())
-        .unwrap_or(".".as_ref());
-    let out_dir = output_dir.join(size_dir);
+    let out_dir = output_dir.join("scalable").join(category);
     std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
     let out_path = out_dir.join(name);
     std::fs::copy(src, &out_path).map_err(|e| e.to_string())?;
