@@ -10,24 +10,124 @@ use quick_xml::events::{Event, BytesStart};
 use akspraypaint::{NoctaliaTheme, parse_theme};
 use crate::utils::theme;
 
-pub const ICON_THEME_NAME: &str = "PurpleHaze";
+// --------------------------------------------------------------------------
+// Theme name resolution
+// --------------------------------------------------------------------------
 
-/// Icons are cached by theme hash only (not wallpaper), since a single icon set
-/// serves any wallpaper.
-#[allow(dead_code)]
-pub fn icon_cache_root() -> PathBuf {
-    dirs::cache_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("akspraypaint")
-        .join("icons")
+/// Read the current Noctalia theme name from settings.toml.
+/// Resolves the `source` field to find which key holds the active theme name.
+pub fn get_current_theme_name() -> Result<String, String> {
+    let state_dir = theme::noctalia_state_dir()
+        .ok_or_else(|| "noctalia state directory not found (~/.local/state/noctalia)".to_string())?;
+    let settings_path = state_dir.join("settings.toml");
+    let content = std::fs::read_to_string(&settings_path)
+        .map_err(|e| format!("failed to read settings.toml: {}", e))?;
+
+    let source = extract_toml_string(&content, "source")
+        .unwrap_or_else(|| "custom".to_string());
+
+    let theme_name = match source.as_str() {
+        "builtin" => extract_toml_string(&content, "builtin"),
+        "community_palette" => extract_toml_string(&content, "community_palette"),
+        "custom" => extract_toml_string(&content, "custom_palette"),
+        _ => extract_toml_string(&content, "custom_palette"),
+    }
+    .unwrap_or_else(|| "Custom".to_string());
+
+    // Convert "Purple Haze" → "Purple_Haze" for use as folder/icon-theme name
+    let sanitized = theme_name
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join("_");
+
+    Ok(sanitized)
 }
 
-pub fn icon_theme_dir() -> PathBuf {
+/// Extract a string value for a top-level key from TOML content.
+fn extract_toml_string(content: &str, key: &str) -> Option<String> {
+    for line in content.lines() {
+        let line = line.trim();
+        if !line.starts_with(key) {
+            continue;
+        }
+        let rest = &line[key.len()..];
+        let rest = rest.trim_start();
+        if !rest.starts_with('=') {
+            continue;
+        }
+        let rest = rest[1..].trim();
+        // Remove surrounding quotes
+        let val = rest.trim_matches('"').trim_matches('\'');
+        return Some(val.to_string());
+    }
+    None
+}
+
+// --------------------------------------------------------------------------
+// Icon theme discovery
+// --------------------------------------------------------------------------
+
+/// Find the root directory of an installed icon theme by name.
+pub fn find_icon_theme_root(name: &str) -> Option<PathBuf> {
+    let search_dirs: Vec<PathBuf> = std::iter::empty()
+        .chain(dirs::data_dir().map(|p| p.join("icons")))
+        .chain(["/usr/share/icons", "/usr/local/share/icons"].iter().map(PathBuf::from))
+        .filter_map(|p| if p.exists() { Some(p) } else { None })
+        .collect();
+
+    for dir in search_dirs {
+        let candidate = dir.join(name);
+        if candidate.is_dir()
+        && (candidate.join("index.theme").exists()
+            || candidate.join("16x16").is_dir()
+            || candidate.join("scalable").is_dir())
+        {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// Find the currently active system icon theme via gsettings.
+fn get_active_icon_theme() -> Option<String> {
+    let output = Command::new("gsettings")
+        .args(["get", "org.gnome.desktop.interface", "icon-theme"])
+        .output()
+        .ok()?;
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Some(stdout.trim_matches('\'').to_string())
+}
+
+/// Pick the best available icon theme to use as the source for recoloring.
+/// Noctalia is preferred if installed; otherwise falls back to the
+/// currently-active gsettings theme, then Adwaita.
+pub fn find_best_base_theme() -> String {
+    if find_icon_theme_root("Noctalia").is_some() {
+        return "Noctalia".to_string();
+    }
+    if let Some(active) = get_active_icon_theme() {
+        if find_icon_theme_root(&active).is_some() {
+            return active;
+        }
+    }
+    "Adwaita".to_string()
+}
+
+// --------------------------------------------------------------------------
+// Output directory
+// --------------------------------------------------------------------------
+
+/// Return the output icon theme directory for a given theme name.
+fn icon_theme_dir_for(name: &str) -> PathBuf {
     dirs::data_dir()
         .unwrap_or_else(|| PathBuf::from("/home"))
         .join("icons")
-        .join(ICON_THEME_NAME)
+        .join(name)
 }
+
+// --------------------------------------------------------------------------
+// Hashing
+// --------------------------------------------------------------------------
 
 fn theme_hash_for_icons(theme_data: &NoctaliaTheme) -> String {
     use sha2::{Digest, Sha256};
@@ -45,7 +145,10 @@ fn theme_hash_for_icons(theme_data: &NoctaliaTheme) -> String {
     hex::encode(&hasher.finalize()[..4])
 }
 
-/// Reusable OKLCH color transfer — used by both wallpaper and icon paths.
+// --------------------------------------------------------------------------
+// Reuse wallpaper recolor
+// --------------------------------------------------------------------------
+
 pub fn recolor_image(
     input: &image::RgbImage,
     theme_data: &NoctaliaTheme,
@@ -54,74 +157,28 @@ pub fn recolor_image(
     crate::utils::recolor::recolor_wallpaper(input, theme_data, verbose)
 }
 
-/// Find the currently active system icon theme via gsettings.
-pub fn get_active_icon_theme() -> Option<String> {
-    let output = Command::new("gsettings")
-        .args(["get", "org.gnome.desktop.interface", "icon-theme"])
-        .output()
-        .ok()?;
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    Some(stdout.trim_matches('\'').to_string())
-}
+// --------------------------------------------------------------------------
+// Icon recoloring
+// --------------------------------------------------------------------------
 
-/// Pick the best available icon theme to use as the source for recoloring.
-/// Noctalia is always preferred if installed (it's the canonical source theme).
-/// Otherwise falls back to the currently-active gsettings theme, then Adwaita
-/// (which covers Adwaita, Adwaita-dark, and other variants on disk).
-pub fn find_best_base_theme() -> String {
-    // Noctalia is the canonical source — use it if present
-    if find_icon_theme_root("Noctalia").is_some() {
-        return "Noctalia".to_string();
-    }
-    // Try the currently-active theme, but skip PurpleHaze (it's our output)
-    if let Some(active) = get_active_icon_theme() {
-        if !active.eq_ignore_ascii_case("PurpleHaze")
-            && find_icon_theme_root(&active).is_some()
-        {
-            return active;
-        }
-    }
-    // Adwaita covers Adwaita, Adwaita-dark, etc.
-    "Adwaita".to_string()
-}
-
-/// Find the root directory of an installed icon theme by name.
-pub fn find_icon_theme_root(name: &str) -> Option<PathBuf> {
-    let search_dirs: Vec<PathBuf> = std::iter::empty()
-        .chain(dirs::data_dir().map(|p| p.join("icons")))
-        .chain(["/usr/share/icons", "/usr/local/share/icons"].iter().map(PathBuf::from))
-        .filter_map(|p| if p.exists() { Some(p) } else { None })
-        .collect();
-
-    for dir in search_dirs {
-        let candidate = dir.join(name);
-        if candidate.is_dir()
-        && (candidate.join("index.theme").exists()
-            || candidate.join("16x16").is_dir()
-            || candidate.join("scalable").is_dir())
-    {
-        return Some(candidate);
-    }
-    }
-    None
-}
-
-/// Recolor all icons from the base theme and write to the PurpleHaze output dir.
-pub fn recolor_icons(base_theme_name: &str, verbose: bool) -> Result<String, String> {
+/// Recolor all icons from the base theme and write to the per-theme output dir.
+pub fn recolor_icons(theme_name: &str, verbose: bool) -> Result<String, String> {
     let (_, theme_content) = theme::read_theme()?;
     let theme_data = parse_theme(&theme_content)
         .ok_or_else(|| "failed to parse theme from colors.json".to_string())?;
     let hash = theme_hash_for_icons(&theme_data);
+    let base_theme = find_best_base_theme();
 
-    let base_root = find_icon_theme_root(base_theme_name)
-        .ok_or_else(|| format!("icon theme '{}' not found", base_theme_name))?;
+    let base_root = find_icon_theme_root(&base_theme)
+        .ok_or_else(|| format!("icon theme '{}' not found", base_theme))?;
 
-    let output_dir = icon_theme_dir();
+    let output_dir = icon_theme_dir_for(theme_name);
     std::fs::create_dir_all(&output_dir)
         .map_err(|e| format!("failed to create icon output dir: {}", e))?;
 
     if verbose {
-        eprintln!("Base theme: {} ({})", base_theme_name, base_root.display());
+        eprintln!("Base theme: {} ({})", base_theme, base_root.display());
+        eprintln!("Output theme: {}", theme_name);
         eprintln!("Output dir: {}", output_dir.display());
         eprintln!("Theme hash: {}", hash);
     }
@@ -157,11 +214,10 @@ pub fn recolor_icons(base_theme_name: &str, verbose: bool) -> Result<String, Str
             }
 
             let result: Result<(), String> = if ext == "svg" {
-                recolor_svg_icon(&path, &theme_data, verbose).map(|_| ())
+                recolor_svg_icon(&path, &theme_data, &output_dir, verbose).map(|_| ())
             } else if matches!(ext, "png" | "jpg" | "jpeg" | "webp" | "bmp") {
-                recolor_raster_icon(&path, &theme_data).map(|_| ())
+                recolor_raster_icon(&path, &theme_data, &output_dir).map(|_| ())
             } else {
-                // Copy non-image files as-is
                 let dst = out_size.join(path.file_name().unwrap());
                 std::fs::copy(&path, &dst)
                     .map(|_| ())
@@ -209,7 +265,7 @@ pub fn recolor_icons(base_theme_name: &str, verbose: bool) -> Result<String, Str
                 if path.extension().and_then(|e| e.to_str()) != Some("svg") {
                     continue;
                 }
-                match recolor_svg_icon(&path, &theme_data, verbose) {
+                match recolor_svg_icon(&path, &theme_data, &output_dir, verbose) {
                     Ok(_) => {
                         let name = path.file_name().unwrap();
                         let src_size_dir = path
@@ -231,7 +287,7 @@ pub fn recolor_icons(base_theme_name: &str, verbose: bool) -> Result<String, Str
         }
     }
 
-    generate_index_theme(&output_dir, base_theme_name)?;
+    generate_index_theme(&output_dir, theme_name, &base_theme)?;
 
     if verbose {
         eprintln!("Recolored {} icons ({} errors)", total, errors);
@@ -240,13 +296,16 @@ pub fn recolor_icons(base_theme_name: &str, verbose: bool) -> Result<String, Str
     Ok(hash)
 }
 
-/// Generate an index.theme file so GTK recognises the icon theme.
-fn generate_index_theme(output_dir: &Path, base_name: &str) -> Result<(), String> {
+// ------------------------------------------------------------------------------------------------------------------------------------------
+// Generate index.theme
+// ------------------------------------------------------------------------------------------------------------------------------------------
+
+fn generate_index_theme(output_dir: &Path, theme_name: &str, base_name: &str) -> Result<(), String> {
     let index_content = format!(
         "[Icon Theme]\n\
          Name={}\n\
          Comment=Recolored by AKSprayPaint from {}\n\
-         DisplayName=Purple Haze\n\
+         DisplayName={}\n\
          Inherits={}\n\
          Example=folder\n\
          FollowsNav=True\n\
@@ -268,8 +327,9 @@ fn generate_index_theme(output_dir: &Path, base_name: &str) -> Result<(), String
          scalable/mimetypes=svg\n\
          scalable/places=svg\n\
          scalable/status=svg\n",
-        ICON_THEME_NAME,
+        theme_name,
         base_name,
+        theme_name.replace('_', " "),
         base_name
     );
 
@@ -278,11 +338,10 @@ fn generate_index_theme(output_dir: &Path, base_name: &str) -> Result<(), String
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
+// ------------------------------------------------------------------------------------------------------------------------------------------
 // SVG color extraction & recoloring
-// ---------------------------------------------------------------------------
+// ------------------------------------------------------------------------------------------------------------------------------------------
 
-/// Extract all distinct fill/stroke color values from an SVG.
 fn extract_svg_palette(svg_bytes: &[u8]) -> Result<Vec<String>, String> {
     let mut reader = Reader::from_reader(Cursor::new(svg_bytes));
     reader.config_mut().trim_text(true);
@@ -302,11 +361,7 @@ fn extract_svg_palette(svg_bytes: &[u8]) -> Result<Vec<String>, String> {
                     if key == "fill" || key == "stroke" {
                         if let Ok(val) = attr.unescape_value() {
                             let s = val.as_ref();
-                            if !s.is_empty()
-                                && s != "none"
-                                && s != "transparent"
-                                && s != "currentColor"
-                            {
+                            if !s.is_empty() && s != "none" && s != "transparent" && s != "currentColor" {
                                 hex_colors.push(s.to_string());
                             }
                         }
@@ -339,7 +394,6 @@ fn extract_svg_palette(svg_bytes: &[u8]) -> Result<Vec<String>, String> {
     Ok(hex_colors)
 }
 
-/// Parse a hex string (#rrggbb or #rgb) into RGB bytes.
 fn parse_svg_color(s: &str) -> Option<[u8; 3]> {
     let s = s.trim();
     if !s.starts_with('#') {
@@ -363,11 +417,11 @@ fn parse_svg_color(s: &str) -> Option<[u8; 3]> {
     }
 }
 
-// ---------------------------------------------------------------------------
+// ------------------------------------------------------------------------------------------------------------------------------------------
 // OKLCH color math
-// ---------------------------------------------------------------------------
+// ------------------------------------------------------------------------------------------------------------------------------------------
 
-use palette::{FromColor, IntoColor, Oklch, OklabHue, Srgb};
+use palette::{FromColor, IntoColor, OklabHue, Oklch, Srgb};
 
 fn rgb_to_oklch(rgb: [u8; 3]) -> Oklch<f32> {
     let s = Srgb::new(rgb[0] as f32 / 255.0, rgb[1] as f32 / 255.0, rgb[2] as f32 / 255.0);
@@ -396,11 +450,6 @@ fn hue_to_ab(chroma: f32, hue: OklabHue<f32>) -> (f32, f32) {
     (chroma * r.cos(), chroma * r.sin())
 }
 
-// ---------------------------------------------------------------------------
-// Anchor mapping
-// ---------------------------------------------------------------------------
-
-/// Build anchor mappings: each unique SVG color → closest theme color.
 fn build_svg_anchor_mappings(
     svg_colors: &[String],
     theme_data: &NoctaliaTheme,
@@ -447,22 +496,26 @@ fn build_svg_anchor_mappings(
     result
 }
 
-// ---------------------------------------------------------------------------
+// ------------------------------------------------------------------------------------------------------------------------------------------
 // SVG recoloring
-// ---------------------------------------------------------------------------
+// ------------------------------------------------------------------------------------------------------------------------------------------
 
-/// Recolor a single SVG icon by rewriting fill/stroke color attributes.
-fn recolor_svg_icon(src: &Path, theme_data: &NoctaliaTheme, verbose: bool) -> Result<PathBuf, String> {
+fn recolor_svg_icon(
+    src: &Path,
+    theme_data: &NoctaliaTheme,
+    output_dir: &Path,
+    verbose: bool,
+) -> Result<PathBuf, String> {
     let svg_bytes = std::fs::read(src).map_err(|e| format!("failed to read SVG: {}", e))?;
 
     let palette = extract_svg_palette(&svg_bytes)?;
     if palette.is_empty() {
-        return copy_icon_as_is(src);
+        return copy_icon_as_is(src, output_dir);
     }
 
     let mappings = build_svg_anchor_mappings(&palette, theme_data);
     if mappings.is_empty() {
-        return copy_icon_as_is(src);
+        return copy_icon_as_is(src, output_dir);
     }
 
     if verbose {
@@ -478,7 +531,7 @@ fn recolor_svg_icon(src: &Path, theme_data: &NoctaliaTheme, verbose: bool) -> Re
         .parent()
         .and_then(|p| p.file_name())
         .unwrap_or(".".as_ref());
-    let out_dir = icon_theme_dir().join(size_dir);
+    let out_dir = output_dir.join(size_dir);
     std::fs::create_dir_all(&out_dir)
         .map_err(|e| format!("failed to create dir: {}", e))?;
     let out_path = out_dir.join(name);
@@ -488,20 +541,19 @@ fn recolor_svg_icon(src: &Path, theme_data: &NoctaliaTheme, verbose: bool) -> Re
     Ok(out_path)
 }
 
-fn copy_icon_as_is(src: &Path) -> Result<PathBuf, String> {
+fn copy_icon_as_is(src: &Path, output_dir: &Path) -> Result<PathBuf, String> {
     let name = src.file_name().unwrap();
     let size_dir = src
         .parent()
         .and_then(|p| p.file_name())
         .unwrap_or(".".as_ref());
-    let out_dir = icon_theme_dir().join(size_dir);
+    let out_dir = output_dir.join(size_dir);
     std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
     let out_path = out_dir.join(name);
     std::fs::copy(src, &out_path).map_err(|e| e.to_string())?;
     Ok(out_path)
 }
 
-/// Apply the color mappings to all fill/stroke attributes in SVG bytes.
 fn transfer_svg_colors(
     svg_bytes: &[u8],
     mappings: &std::collections::HashMap<String, String>,
@@ -527,13 +579,13 @@ fn transfer_svg_colors(
                     .map_err(|e| format!("SVG write error: {}", e))?;
             }
             Ok(Event::Eof) => {
-                writer.write_event(Event::Eof).map_err(|e| format!("SVG write error: {}", e))?;
+                writer
+                    .write_event(Event::Eof)
+                    .map_err(|e| format!("SVG write error: {}", e))?;
                 break;
             }
             Ok(e) => {
-                writer
-                    .write_event(e)
-                    .map_err(|e| format!("SVG write error: {}", e))?;
+                writer.write_event(e).map_err(|e| format!("SVG write error: {}", e))?;
             }
             Err(e) => return Err(format!("SVG read error: {}", e)),
         }
@@ -542,13 +594,10 @@ fn transfer_svg_colors(
     Ok(writer.into_inner().into_inner())
 }
 
-/// Rewrite fill/stroke attributes on a BytesStart element using the mappings.
 fn rewrite_element_attrs(
     elem: BytesStart<'_>,
     mappings: &std::collections::HashMap<String, String>,
 ) -> Result<BytesStart<'static>, String> {
-    // Extract all attribute data into owned types first, then build a new
-    // BytesStart from scratch so we avoid borrow conflicts with clear_attributes.
     let elem_name_bytes = elem.name().into_inner().to_vec();
 
     let mut new_attrs: Vec<(String, String)> = Vec::new();
@@ -583,8 +632,6 @@ fn rewrite_element_attrs(
         new_attrs.push((key, value_unescaped));
     }
 
-    // Build a new BytesStart with the original name and new attributes.
-    // We own elem_name_bytes so we can safely pass it as owned data.
     let elem_name_str = String::from_utf8_lossy(&elem_name_bytes);
     let mut result = BytesStart::new(elem_name_str.into_owned());
     for (key, value) in new_attrs {
@@ -594,7 +641,6 @@ fn rewrite_element_attrs(
     Ok(result)
 }
 
-/// Rewrite fill:/stroke: sub-values inside a style attribute string.
 fn rewrite_style_value(
     style: &str,
     mappings: &std::collections::HashMap<String, String>,
@@ -610,12 +656,15 @@ fn rewrite_style_value(
     result
 }
 
-// ---------------------------------------------------------------------------
+// ------------------------------------------------------------------------------------------------------------------------------------------
 // Raster icon recoloring
-// ---------------------------------------------------------------------------
+// ------------------------------------------------------------------------------------------------------------------------------------------
 
-/// Recolor a PNG/JPEG/WebP icon using the full pixel transfer pipeline.
-fn recolor_raster_icon(src: &Path, theme_data: &NoctaliaTheme) -> Result<PathBuf, String> {
+fn recolor_raster_icon(
+    src: &Path,
+    theme_data: &NoctaliaTheme,
+    output_dir: &Path,
+) -> Result<PathBuf, String> {
     let img = image::open(src).map_err(|e| format!("failed to open image: {}", e))?;
     let rgb_img = img.to_rgb8();
     let recolored = recolor_image(&rgb_img, theme_data, false);
@@ -625,7 +674,7 @@ fn recolor_raster_icon(src: &Path, theme_data: &NoctaliaTheme) -> Result<PathBuf
         .parent()
         .and_then(|p| p.file_name())
         .unwrap_or(".".as_ref());
-    let out_path = icon_theme_dir().join(size_dir).join(name);
+    let out_path = output_dir.join(size_dir).join(name);
 
     recolored
         .save(&out_path)
@@ -633,15 +682,14 @@ fn recolor_raster_icon(src: &Path, theme_data: &NoctaliaTheme) -> Result<PathBuf
     Ok(out_path)
 }
 
-// ---------------------------------------------------------------------------
+// ------------------------------------------------------------------------------------------------------------------------------------------
 // Apply theme
-// ---------------------------------------------------------------------------
+// ------------------------------------------------------------------------------------------------------------------------------------------
 
-/// Apply the PurpleHaze icon theme via gsettings, then rebuild the GTK icon
-/// cache so Nemo picks up the new colors without a restart.
-pub fn apply_icon_theme() -> Result<(), String> {
+/// Apply the named icon theme via gsettings, then rebuild the GTK icon cache.
+pub fn apply_icon_theme(theme_name: &str) -> Result<(), String> {
     let output = Command::new("gsettings")
-        .args(["set", "org.gnome.desktop.interface", "icon-theme", ICON_THEME_NAME])
+        .args(["set", "org.gnome.desktop.interface", "icon-theme", theme_name])
         .output()
         .map_err(|e| format!("failed to run gsettings: {}", e))?;
     if !output.status.success() {
@@ -651,13 +699,16 @@ pub fn apply_icon_theme() -> Result<(), String> {
         ));
     }
 
-    // Rebuild the GTK icon cache so Nemo picks up the new theme immediately.
+    let output_dir = icon_theme_dir_for(theme_name);
     let cache_output = Command::new("gtk-update-icon-cache")
-        .args(["--force", &icon_theme_dir().to_string_lossy()])
+        .args(["--force", &output_dir.to_string_lossy()])
         .output();
 
     if let Err(e) = cache_output {
-        eprintln!("warning: gtk-update-icon-cache failed: {} (non-fatal)", e);
+        eprintln!(
+            "warning: gtk-update-icon-cache failed: {} (non-fatal)",
+            e
+        );
     } else if !cache_output.unwrap().status.success() {
         eprintln!(
             "warning: gtk-update-icon-cache returned non-zero (non-fatal)"
@@ -689,5 +740,15 @@ mod tests {
             + (back[1] as i32 - orig[1] as i32).abs()
             + (back[2] as i32 - orig[2] as i32).abs();
         assert!(diff < 10, "roundtrip should be close, diff={}", diff);
+    }
+
+    #[test]
+    fn test_extract_toml_string() {
+        let content = "builtin = \"Eldritch\"
+custom_palette = \"Purple Haze\"
+source = \"custom\"";
+        assert_eq!(extract_toml_string(content, "builtin"), Some("Eldritch".to_string()));
+        assert_eq!(extract_toml_string(content, "custom_palette"), Some("Purple Haze".to_string()));
+        assert_eq!(extract_toml_string(content, "source"), Some("custom".to_string()));
     }
 }

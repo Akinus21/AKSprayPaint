@@ -58,3 +58,14 @@ pub fn noctalia_dir() -> Option<PathBuf> {
         None
     }
 }
+
+/// Find ~/.local/state/noctalia (where settings.toml lives).
+pub fn noctalia_state_dir() -> Option<PathBuf> {
+    let data_local = dirs::data_local_dir()?;
+    let dir = data_local.join("noctalia");
+    if dir.is_dir() {
+        Some(dir)
+    } else {
+        None
+    }
+}

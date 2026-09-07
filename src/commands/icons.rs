@@ -6,15 +6,14 @@ use std::time::{Duration, Instant};
 const DEBOUNCE_MS: u64 = 500;
 
 pub fn recolor(verbose: bool) -> Result<(), String> {
-    let base_theme = find_best_base_theme();
-    eprintln!("Detected icon theme: {}", base_theme);
+    let theme_name = icons::get_current_theme_name()?;
+    eprintln!("Icon theme: {}", theme_name);
 
-    let hash = icons::recolor_icons(&base_theme, verbose)?;
-
-    icons::apply_icon_theme()?;
+    let hash = icons::recolor_icons(&theme_name, verbose)?;
+    icons::apply_icon_theme(&theme_name)?;
     eprintln!(
         "Icon theme '{}' applied ({} icons cached)",
-        icons::ICON_THEME_NAME,
+        theme_name,
         hash
     );
     Ok(())
@@ -26,7 +25,7 @@ pub fn watch() -> Result<(), String> {
     let noctalia_dir = theme::noctalia_dir()
         .ok_or_else(|| "noctalia config directory not found".to_string())?;
 
-    let base_theme = icons::find_best_base_theme();
+    let base_theme = find_best_base_theme();
 
     eprintln!("Icon theme watch started");
     eprintln!("Base theme: {}", base_theme);
@@ -75,28 +74,65 @@ pub fn watch() -> Result<(), String> {
 
             std::thread::sleep(Duration::from_millis(DEBOUNCE_MS));
             eprintln!("Theme change detected, recoloring icons...");
-            match icons::recolor_icons(&base_theme, false) {
-                Ok(hash) => {
-                    if let Err(e) = icons::apply_icon_theme() {
-                        eprintln!("Error applying icon theme: {}", e);
-                    } else {
-                        eprintln!("Icon theme '{}' applied ({})", icons::ICON_THEME_NAME, hash);
+
+            match icons::get_current_theme_name() {
+                Ok(theme_name) => {
+                    match icons::recolor_icons(&theme_name, false) {
+                        Ok(hash) => {
+                            if let Err(e) = icons::apply_icon_theme(&theme_name) {
+                                eprintln!("Error applying icon theme: {}", e);
+                            } else {
+                                eprintln!(
+                                    "Icon theme '{}' applied ({})",
+                                    theme_name, hash
+                                );
+                            }
+                        }
+                        Err(e) => eprintln!("Error recoloring icons: {}", e),
                     }
                 }
-                Err(e) => eprintln!("Error recoloring icons: {}", e),
+                Err(e) => eprintln!("Error getting theme name: {}", e),
             }
         }
     }
 }
 
 pub fn clean() -> Result<(), String> {
-    let dir = icons::icon_theme_dir();
-    if dir.exists() {
-        std::fs::remove_dir_all(&dir)
-            .map_err(|e| format!("failed to remove icon theme dir: {}", e))?;
-        eprintln!("Removed: {}", dir.display());
-    } else {
+    let icons_base = dirs::data_dir()
+        .ok_or_else(|| "data directory not found".to_string())?
+        .join("icons");
+
+    let mut removed = 0usize;
+    if !icons_base.is_dir() {
         eprintln!("No icon theme directory found");
+        return Ok(());
+    }
+
+    let entries = std::fs::read_dir(&icons_base).map_err(|e| e.to_string())?;
+    for entry in entries {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        // Remove any theme directory that isn't a standard system theme
+        if !["Adwaita", "Adwaita-dark", "Noctalia", "hicolor", "Humanity", "gnome", "oxygen"]
+            .contains(&name)
+        {
+            if let Err(e) = std::fs::remove_dir_all(&path) {
+                eprintln!("Failed to remove {}: {}", path.display(), e);
+            } else {
+                removed += 1;
+                eprintln!("Removed: {}", path.display());
+            }
+        }
+    }
+
+    if removed == 0 {
+        eprintln!("No recolored icon themes found");
+    } else {
+        eprintln!("Removed {} recolored icon theme(s)", removed);
     }
     Ok(())
 }
