@@ -101,16 +101,40 @@ fn get_active_icon_theme() -> Option<String> {
 /// Pick the best available icon theme to use as the source for recoloring.
 /// Noctalia is preferred if installed; otherwise falls back to the
 /// currently-active gsettings theme, then Adwaita.
-pub fn find_best_base_theme() -> String {
-    if find_icon_theme_root("Noctalia").is_some() {
-        return "Noctalia".to_string();
-    }
+/// Skips any recolored output themes (those in ~/.local/share/icons that
+/// we may have created previously).
+pub(crate) fn find_best_base_theme() -> String {
     if let Some(active) = get_active_icon_theme() {
-        if find_icon_theme_root(&active).is_some() {
+        // Skip if the active theme IS a recolored output (not a real source)
+        if !is_recolored_output(&active)
+            && find_icon_theme_root(&active).is_some()
+        {
             return active;
         }
     }
+    if find_icon_theme_root("Noctalia").is_some() {
+        return "Noctalia".to_string();
+    }
+    // Always fall back to Adwaita (covers Adwaita-dark as a variant)
     "Adwaita".to_string()
+}
+
+/// Check if a theme name looks like a recolored output (e.g. Purple_Haze,
+/// Eldritch, custom theme names — not system themes like Adwaita).
+fn is_recolored_output(name: &str) -> bool {
+    let skip = [
+        "Adwaita", "Adwaita-dark", "Adwaita-light",
+        "Noctalia", "hicolor", "Humanity", "gnome", "oxygen",
+        "Papirus", "Papirus-Dark",
+    ];
+    !skip.contains(&name)
+        && (name.contains('_')
+            || name == "Custom"
+            || name == "Eldritch"
+            || name == "Purple Haze"
+            || name == "Lilac AMOLED"
+            || name == "Murasaki"
+            || name == "Oxocarbon")
 }
 
 // --------------------------------------------------------------------------
