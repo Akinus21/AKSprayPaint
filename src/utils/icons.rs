@@ -286,6 +286,14 @@ pub fn recolor_icons(theme_name: &str, verbose: bool) -> Result<String, String> 
         eprintln!("Output theme: {}", theme_name);
         eprintln!("Output dir: {}", output_dir.display());
         eprintln!("Theme hash: {}", hash);
+        eprintln!("Theme palette:");
+        eprintln!("  primary:      #{:02x}{:02x}{:02x}", theme_data.primary[0], theme_data.primary[1], theme_data.primary[2]);
+        eprintln!("  on_primary:  #{:02x}{:02x}{:02x}", theme_data.on_primary[0], theme_data.on_primary[1], theme_data.on_primary[2]);
+        eprintln!("  surface:      #{:02x}{:02x}{:02x}", theme_data.surface[0], theme_data.surface[1], theme_data.surface[2]);
+        eprintln!("  on_surface:  #{:02x}{:02x}{:02x}", theme_data.on_surface[0], theme_data.on_surface[1], theme_data.on_surface[2]);
+        eprintln!("  surface_var: #{:02x}{:02x}{:02x}", theme_data.surface_variant[0], theme_data.surface_variant[1], theme_data.surface_variant[2]);
+        eprintln!("  on_surface_v:#{:02x}{:02x}{:02x}", theme_data.on_surface_variant[0], theme_data.on_surface_variant[1], theme_data.on_surface_variant[2]);
+        eprintln!("  error:       #{:02x}{:02x}{:02x}", theme_data.error[0], theme_data.error[1], theme_data.error[2]);
     }
 
     // Collect sizes to process
