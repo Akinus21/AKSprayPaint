@@ -49,8 +49,9 @@ pub fn write_border_config(theme: &crate::gtkd::theme::NoctaliaTheme) -> Result<
 
 /// Signal niri to reload its config via socket IPC.
 pub fn reload_niri_config() {
-    let output = Command::new("niri")
-        .args(["msg", "action", "load-config-file"])
+    // Run with a timeout so it can't hang the daemon
+    let output = Command::new("sh")
+        .args(["-c", "timeout 3 niri msg action load-config-file || true"])
         .output();
 
     match output {
