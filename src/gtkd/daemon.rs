@@ -23,22 +23,17 @@ pub fn run(config: GtkBridgeConfig) -> Result<(), String> {
     );
     eprintln!("[gtkd] initial theme: {:?}", theme_state.icon_theme);
 
-    // Inject into any already-running watched apps (with a grace period to let GTK initialize)
+    // Inject into any already-running watched apps immediately
     let running = scan_running(&config.watch.apps);
-    if !running.is_empty() {
-        eprintln!("[gtkd] found {} already-running watched apps, injecting in {}ms...", running.len(), grace_period.as_millis());
-        for (pid, comm) in &running {
-            let settings = build_settings(&config, &theme_state);
-            let pid_val = *pid;
-            let comm_val = comm.clone();
-            std::thread::spawn(move || {
-                std::thread::sleep(grace_period);
-                eprintln!("[gtkd] injecting into already-running {} (PID {})", comm_val, pid_val);
-                inject_async(pid_val, settings);
-            });
-            injected_pids.insert(*pid);
-            watched_apps.mark_injected(*pid);
-        }
+    for (pid, comm) in &running {
+        eprintln!(
+            "[gtkd] found already-running {} (PID {}), injecting...",
+            comm, pid
+        );
+        let settings = build_settings(&config, &theme_state);
+        inject_async(*pid, settings);
+        injected_pids.insert(*pid);
+        watched_apps.mark_injected(*pid);
     }
 
     loop {
