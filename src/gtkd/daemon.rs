@@ -64,7 +64,7 @@ pub fn run(config: GtkBridgeConfig) -> Result<(), String> {
                 eprintln!("[gtkd] recoloring icons for new theme...");
                 let theme_arg = new_theme.icon_theme_name();
                 let recolor_out = std::process::Command::new("akspraypaint")
-                    .args(["icons", "recolor", &theme_arg])
+                    .args(["icons", "recolor", "--theme", &theme_arg])
                     .output();
                 match recolor_out {
                     Ok(out) if out.status.success() => {
