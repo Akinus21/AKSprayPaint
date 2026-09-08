@@ -59,30 +59,28 @@ pub fn run(config: GtkBridgeConfig) -> Result<(), String> {
                 }
             }
 
-            // 2. Background icon recolor (if enabled)
+            // 2. Blocking icon recolor — must complete before injection
             if config.settings.icons {
                 let theme_name = new_theme_name.clone();
-                eprintln!("[gtkd] recoloring icons for new theme...");
-                std::thread::spawn(move || {
-                    let recolor_out = std::process::Command::new("akspraypaint")
-                        .args(["icons", "recolor", "--theme", &theme_name])
-                        .output();
-                    match recolor_out {
-                        Ok(out) if out.status.success() => {
-                            eprintln!("[gtkd] icon recolor done");
-                        }
-                        Ok(out) => {
-                            eprintln!(
-                                "[gtkd] icon recolor failed ({}): {}",
-                                out.status,
-                                String::from_utf8_lossy(&out.stderr)
-                            );
-                        }
-                        Err(e) => {
-                            eprintln!("[gtkd] icon recolor error: {}", e);
-                        }
+                eprintln!("[gtkd] recoloring icons for new theme (blocking)...");
+                let recolor_out = std::process::Command::new("akspraypaint")
+                    .args(["icons", "recolor", "--theme", &theme_name])
+                    .output();
+                match recolor_out {
+                    Ok(out) if out.status.success() => {
+                        eprintln!("[gtkd] icon recolor done");
                     }
-                });
+                    Ok(out) => {
+                        eprintln!(
+                            "[gtkd] icon recolor failed ({}): {}",
+                            out.status,
+                            String::from_utf8_lossy(&out.stderr)
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!("[gtkd] icon recolor error: {}", e);
+                    }
+                }
             }
 
             // 3. Inject into running apps with new theme
