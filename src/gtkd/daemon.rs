@@ -23,15 +23,15 @@ pub fn run(config: GtkBridgeConfig) -> Result<(), String> {
     );
     eprintln!("[gtkd] initial theme: {:?}", theme_state.icon_theme);
 
-    // Inject into any already-running watched apps immediately
+    // Skip injecting into already-running apps at startup.
+    // They may not have fully initialized their GTK state yet.
+    // The new-launch path (with grace period) handles them when they start.
     let running = scan_running(&config.watch.apps);
     for (pid, comm) in &running {
         eprintln!(
-            "[gtkd] found already-running {} (PID {}), injecting...",
+            "[gtkd] found already-running {} (PID {}), will inject when it restarts",
             comm, pid
         );
-        let settings = build_settings(&config, &theme_state);
-        inject_async(*pid, settings);
         injected_pids.insert(*pid);
         watched_apps.mark_injected(*pid);
     }
