@@ -50,6 +50,15 @@ pub fn run(config: GtkBridgeConfig) -> Result<(), String> {
             );
             theme_state = new_theme.clone();
 
+            // Apply niri border colors
+            if let Some(ref theme) = theme_state.noctalia_theme {
+                if let Err(e) = crate::gtkd::niri::write_border_config(theme) {
+                    eprintln!("[gtkd] niri border config failed: {}", e);
+                } else {
+                    crate::gtkd::niri::reload_niri_config();
+                }
+            }
+
             for (pid, comm) in &running {
                 let settings = build_settings(&config, &theme_state);
                 eprintln!("[gtkd] re-injecting into {} (PID {})", comm, pid);
