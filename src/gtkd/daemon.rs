@@ -48,10 +48,9 @@ pub fn run(config: GtkBridgeConfig) -> Result<(), String> {
                 "[gtkd] theme changed: {:?} -> {:?}",
                 theme_state.icon_theme, new_theme.icon_theme
             );
-            theme_state = new_theme.clone();
 
             // Apply niri border colors
-            if let Some(ref theme) = theme_state.noctalia_theme {
+            if let Some(ref theme) = new_theme.noctalia_theme {
                 if let Err(e) = crate::gtkd::niri::write_border_config(theme) {
                     eprintln!("[gtkd] niri border config failed: {}", e);
                 } else {
@@ -59,7 +58,8 @@ pub fn run(config: GtkBridgeConfig) -> Result<(), String> {
                 }
             }
 
-            // Recolor icons if enabled and theme changed
+            // Recolor icons if enabled — do this BEFORE updating theme_state
+            // so we use the NEW theme name for the folder, not the old one
             if config.settings.icons {
                 eprintln!("[gtkd] recoloring icons for new theme...");
                 let recolor_out = std::process::Command::new("akspraypaint")
@@ -81,6 +81,9 @@ pub fn run(config: GtkBridgeConfig) -> Result<(), String> {
                     }
                 }
             }
+
+            // Re-detect theme AFTER recolor so icon_theme matches the folder we just created
+            theme_state = ThemeState::detect();
 
             for (pid, comm) in &running {
                 let settings = build_settings(&config, &theme_state);
