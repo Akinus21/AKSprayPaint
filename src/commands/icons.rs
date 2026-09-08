@@ -5,8 +5,11 @@ use std::time::{Duration, Instant};
 
 const DEBOUNCE_MS: u64 = 500;
 
-pub fn recolor(verbose: bool) -> Result<(), String> {
-    let theme_name = icons::get_current_theme_name()?;
+pub fn recolor(theme_name: Option<&str>, verbose: bool) -> Result<(), String> {
+    let theme_name = match theme_name {
+        Some(name) => name.to_string(),
+        None => icons::get_current_theme_name()?,
+    };
     eprintln!("Icon theme: {}", theme_name);
 
     let hash = icons::recolor_icons(&theme_name, verbose)?;

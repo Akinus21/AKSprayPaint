@@ -28,15 +28,12 @@ pub fn write_border_config(theme: &crate::gtkd::theme::NoctaliaTheme) -> Result<
     // Inactive border = surface_variant (dimmer)
     let [r2, g2, b2] = theme.surface_variant;
 
+    // Format hex colors without the # prefix to avoid format syntax issues
+    let active = format!("{:02x}{:02x}{:02x}", r1, g1, b1);
+    let inactive = format!("{:02x}{:02x}{:02x}", r2, g2, b2);
+
     let kdl = format!(
-        r#"window {{
-    border: {r1} {g1} {b1};
-    border-radius: 8;
-    titlebar: {r1} {g1} {b1};
-    inactive-border: {r2} {g2} {b2};
-    inactive-titlebar: {r2} {g2} {b2};
-}}
-"#,
+        "layout {{\n    border {{\n        active-color \"#{active}\";\n        inactive-color \"#{inactive}\";\n    }}\n}}\n"
     );
 
     let path = border_config_path();

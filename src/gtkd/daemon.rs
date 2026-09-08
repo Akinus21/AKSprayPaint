@@ -62,8 +62,9 @@ pub fn run(config: GtkBridgeConfig) -> Result<(), String> {
             // so we use the NEW theme name for the folder, not the old one
             if config.settings.icons {
                 eprintln!("[gtkd] recoloring icons for new theme...");
+                let theme_arg = new_theme.icon_theme_name();
                 let recolor_out = std::process::Command::new("akspraypaint")
-                    .args(["icons", "recolor"])
+                    .args(["icons", "recolor", &theme_arg])
                     .output();
                 match recolor_out {
                     Ok(out) if out.status.success() => {

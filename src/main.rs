@@ -67,6 +67,9 @@ enum IconsSubcommand {
         /// Verbose output
         #[arg(long)]
         verbose: bool,
+        /// Override the theme name (for daemon use)
+        #[arg(long)]
+        theme: Option<String>,
     },
     /// Watch for theme changes and automatically recolor icons
     Watch,
@@ -101,7 +104,7 @@ fn main() -> Result<(), String> {
         } => commands::run::run(wallpaper.as_deref(), verbose, no_cache),
         Command::Watch { wallpaper } => commands::watch::watch(wallpaper.as_deref()),
         Command::Icons { sub } => match sub {
-            IconsSubcommand::Recolor { verbose } => commands::icons::recolor(verbose),
+            IconsSubcommand::Recolor { verbose, ref theme } => commands::icons::recolor(theme.as_deref(), verbose),
             IconsSubcommand::Watch => commands::icons::watch(),
             IconsSubcommand::Clean => commands::icons::clean(),
         },
