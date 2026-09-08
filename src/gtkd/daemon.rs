@@ -18,10 +18,7 @@ pub fn run(config: GtkBridgeConfig) -> Result<(), String> {
     let mut injected_pids: HashSet<u32> = HashSet::new();
     let mut watched_apps = WatchedApps::default();
 
-    eprintln!(
-        "[gtkd] started, watching for: {:?}",
-        config.watch.apps
-    );
+    eprintln!("[gtkd] started, watching for: {:?}", config.watch.apps);
     eprintln!("[gtkd] initial theme: {:?}", theme_state.icon_theme);
 
     // Don't inject into already-running apps at startup — the new-launch path
@@ -31,7 +28,8 @@ pub fn run(config: GtkBridgeConfig) -> Result<(), String> {
         eprintln!(
             "[gtkd] found {} already-running {} (PID {}), will handle via restart path",
             running.len(),
-            comm, pid
+            comm,
+            pid
         );
         injected_pids.insert(*pid);
         watched_apps.mark_injected(*pid);

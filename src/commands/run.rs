@@ -70,7 +70,10 @@ pub fn recolor_wallpaper_only(verbose: bool) -> Result<std::path::PathBuf, Strin
 
     // Check cache first
     if let Some(cached_path) = cache::find_cached(&hash, &wp_path) {
-        eprintln!("Using cached recolored wallpaper: {}", cached_path.display());
+        eprintln!(
+            "Using cached recolored wallpaper: {}",
+            cached_path.display()
+        );
         return Ok(cached_path);
     }
 

@@ -50,14 +50,21 @@ enum Command {
     },
     /// Show current status (wallpaper, theme, cache)
     Status,
-    /// Remove all cached recolored images
-    Clean,
+    /// Remove cached recolored images and/or recolored icon themes
+    Clean {
+        /// What to clean: "icons", "wallpapers", or both (default)
+        #[arg(default_value = "all", hide_default_value = true)]
+        target: String,
+    },
     /// Upgrade akspraypaint via Homebrew
     Upgrade,
     /// Open the GTK bridge daemon config in $EDITOR
     Config,
     /// Run the GTK bridge daemon
-    Gtkd { #[clap(skip)] _unit: () },
+    Gtkd {
+        #[clap(skip)]
+        _unit: (),
+    },
 }
 
 #[derive(Subcommand)]
@@ -73,8 +80,6 @@ enum IconsSubcommand {
     },
     /// Watch for theme changes and automatically recolor icons
     Watch,
-    /// Remove the PurpleHaze icon theme
-    Clean,
 }
 
 fn main() -> Result<(), String> {
@@ -104,13 +109,27 @@ fn main() -> Result<(), String> {
         } => commands::run::run(wallpaper.as_deref(), verbose, no_cache),
         Command::Watch { wallpaper } => commands::watch::watch(wallpaper.as_deref()),
         Command::Icons { sub } => match sub {
-            IconsSubcommand::Recolor { verbose, ref theme } => commands::icons::recolor(theme.as_deref(), verbose),
+            IconsSubcommand::Recolor { verbose, ref theme } => {
+                commands::icons::recolor(theme.as_deref(), verbose)
+            }
             IconsSubcommand::Watch => commands::icons::watch(),
-            IconsSubcommand::Clean => commands::icons::clean(),
         },
         Command::Set { path } => commands::set::set(&path),
         Command::Status => commands::set::status(),
-        Command::Clean => commands::set::clean(),
+        Command::Clean { target } => {
+            let t = match target.as_str() {
+                "all" => None,
+                "icons" => Some("icons"),
+                "wallpapers" => Some("wallpapers"),
+                _ => {
+                    return Err(format!(
+                        "unknown clean target '{}': valid values are 'icons', 'wallpapers', or 'all'",
+                        target
+                    ));
+                }
+            };
+            commands::clean::clean(t)
+        }
         Command::Upgrade => {
             commands::upgrade::upgrade();
             Ok(())
@@ -119,9 +138,7 @@ fn main() -> Result<(), String> {
             let path = gtkd::config::default_path();
             let _ = gtkd::config::GtkBridgeConfig::load_or_create(&path);
             let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nano".to_string());
-            let result = std::process::Command::new(&editor)
-                .arg(&path)
-                .status();
+            let result = std::process::Command::new(&editor).arg(&path).status();
             if let Err(e) = result {
                 eprintln!("failed to open editor: {}", e);
             }

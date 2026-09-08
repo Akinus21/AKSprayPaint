@@ -272,8 +272,12 @@ pub fn recolor_icons(theme_name: &str, verbose: bool) -> Result<String, String> 
 
     eprintln!(
         "[recolor] palette loaded: primary=#{:02x}{:02x}{:02x} surface=#{:02x}{:02x}{:02x}",
-        theme_data.primary[0], theme_data.primary[1], theme_data.primary[2],
-        theme_data.surface[0], theme_data.surface[1], theme_data.surface[2]
+        theme_data.primary[0],
+        theme_data.primary[1],
+        theme_data.primary[2],
+        theme_data.surface[0],
+        theme_data.surface[1],
+        theme_data.surface[2]
     );
     let base_theme = find_best_base_theme();
 

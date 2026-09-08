@@ -112,11 +112,7 @@ pub fn inject_settings(pid: u32, settings: &[Setting]) -> Result<(), String> {
         return Ok(());
     }
 
-    let mut args = vec![
-        "-p".to_string(),
-        pid.to_string(),
-        "-batch".to_string(),
-    ];
+    let mut args = vec!["-p".to_string(), pid.to_string(), "-batch".to_string()];
 
     for setting in settings {
         args.push("-ex".to_string());
@@ -140,18 +136,20 @@ pub fn inject_settings(pid: u32, settings: &[Setting]) -> Result<(), String> {
 
 /// Inject all settings into a running process asynchronously (spawned task).
 pub fn inject_async(pid: u32, settings: Vec<Setting>) {
-    std::thread::spawn(move || {
-        match inject_settings(pid, &settings) {
-            Ok(()) => {
-                let details: Vec<String> = settings
-                    .iter()
-                    .map(|s| format!("{}={}", s.property.property_name(), s.value))
-                    .collect();
-                eprintln!("[gtkd] injected settings into PID {} ({})", pid, details.join(", "));
-            }
-            Err(e) => {
-                eprintln!("[gtkd] injection into PID {} failed: {}", pid, e);
-            }
+    std::thread::spawn(move || match inject_settings(pid, &settings) {
+        Ok(()) => {
+            let details: Vec<String> = settings
+                .iter()
+                .map(|s| format!("{}={}", s.property.property_name(), s.value))
+                .collect();
+            eprintln!(
+                "[gtkd] injected settings into PID {} ({})",
+                pid,
+                details.join(", ")
+            );
+        }
+        Err(e) => {
+            eprintln!("[gtkd] injection into PID {} failed: {}", pid, e);
         }
     });
 }

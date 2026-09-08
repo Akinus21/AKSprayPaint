@@ -24,7 +24,10 @@ pub fn upgrade() {
 
     println!("Upgrading akspraypaint...");
 
-    let upgrade = match Command::new("brew").args(["upgrade", "akspraypaint"]).output() {
+    let upgrade = match Command::new("brew")
+        .args(["upgrade", "akspraypaint"])
+        .output()
+    {
         Ok(o) => o,
         Err(e) => {
             eprintln!("failed to run brew upgrade: {}", e);

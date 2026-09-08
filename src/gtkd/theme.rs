@@ -19,7 +19,9 @@ impl ThemeState {
 
     /// Return the icon theme name, or a fallback.
     pub fn icon_theme_name(&self) -> String {
-        self.icon_theme.clone().unwrap_or_else(|| "Adwaita".to_string())
+        self.icon_theme
+            .clone()
+            .unwrap_or_else(|| "Adwaita".to_string())
     }
 }
 

@@ -68,9 +68,3 @@ pub fn status() -> Result<(), String> {
 
     Ok(())
 }
-
-pub fn clean() -> Result<(), String> {
-    let count = cache::clean_cache()?;
-    println!("Removed {} cached theme directories", count);
-    Ok(())
-}
