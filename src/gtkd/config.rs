@@ -8,6 +8,7 @@ pub const CONFIG_FILE_NAME: &str = "gtk-bridge.toml";
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct SettingsToggle {
     pub icons: bool,
+    pub wallpaper: bool,
     pub gtk_theme: bool,
     pub cursor_theme: bool,
     pub font: bool,

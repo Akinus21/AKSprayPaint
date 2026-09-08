@@ -3,6 +3,7 @@
 use std::collections::HashSet;
 use std::time::Duration;
 
+use crate::commands::run::recolor_wallpaper_only;
 use crate::gtkd::config::GtkBridgeConfig;
 use crate::gtkd::inject::{build_settings, inject_async};
 use crate::gtkd::theme::{has_changed, ThemeState};
@@ -51,22 +52,22 @@ pub fn run(config: GtkBridgeConfig) -> Result<(), String> {
 
             let new_theme_name = new_theme.icon_theme_name();
 
-            // Always inject with the NEW theme — whether folder exists or not.
-            // If folder doesn't exist, we inject the new theme AND spawn background recolor.
-            let do_recolor = !crate::utils::icons::theme_folder_exists(&new_theme_name);
-            let inject_theme = new_theme.clone();
-
-            for (pid, comm) in &running {
-                let settings = build_settings(&config, &inject_theme);
-                eprintln!("[gtkd] re-injecting into {} (PID {})", comm, pid);
-                inject_async(*pid, settings);
+            // 1. Blocking wallpaper recolor — must complete before anything else
+            if config.settings.wallpaper {
+                eprintln!("[gtkd] recoloring wallpaper (blocking)...");
+                match recolor_wallpaper_only(false) {
+                    Ok(path) => eprintln!("[gtkd] wallpaper recolor done: {}", path.display()),
+                    Err(e) => eprintln!("[gtkd] wallpaper recolor error: {}", e),
+                }
             }
 
-            if do_recolor {
+            // 2. Background icon recolor (if enabled)
+            if config.settings.icons {
+                let theme_name = new_theme_name.clone();
                 eprintln!("[gtkd] recoloring icons for new theme...");
                 std::thread::spawn(move || {
                     let recolor_out = std::process::Command::new("akspraypaint")
-                        .args(["icons", "recolor", "--theme", &new_theme_name])
+                        .args(["icons", "recolor", "--theme", &theme_name])
                         .output();
                     match recolor_out {
                         Ok(out) if out.status.success() => {
@@ -86,7 +87,15 @@ pub fn run(config: GtkBridgeConfig) -> Result<(), String> {
                 });
             }
 
-            // Update theme state to the new theme for next iteration
+            // 3. Inject into running apps with new theme
+            let inject_theme = new_theme.clone();
+            for (pid, comm) in &running {
+                let settings = build_settings(&config, &inject_theme);
+                eprintln!("[gtkd] re-injecting into {} (PID {})", comm, pid);
+                inject_async(*pid, settings);
+            }
+
+            // 4. Update theme state to the new theme for next iteration
             theme_state = new_theme;
             continue;
         }

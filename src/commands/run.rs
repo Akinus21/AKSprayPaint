@@ -57,3 +57,32 @@ pub fn apply_recolor(wp_path: &std::path::Path, hash: &str, verbose: bool) -> Re
     eprintln!("Saved recolored wallpaper: {}", dest.display());
     wallpaper::set_wallpaper(&dest)
 }
+
+/// Recolor the wallpaper and cache it, returning the cached path.
+/// Does NOT set the wallpaper — caller decides when to set it.
+pub fn recolor_wallpaper_only(verbose: bool) -> Result<std::path::PathBuf, String> {
+    let wp_path = wallpaper::detect_wallpaper()
+        .ok_or_else(|| "could not detect current wallpaper".to_string())?;
+    eprintln!("Wallpaper: {}", wp_path.display());
+
+    let (_, theme_content) = theme::read_theme()?;
+    let hash = theme::theme_hash(&theme_content);
+
+    // Check cache first
+    if let Some(cached_path) = cache::find_cached(&hash, &wp_path) {
+        eprintln!("Using cached recolored wallpaper: {}", cached_path.display());
+        return Ok(cached_path);
+    }
+
+    eprintln!("Recoloring wallpaper to match theme ({})...", hash);
+    apply_recolor(&wp_path, &hash, verbose)?;
+    // apply_recolor already sets the wallpaper, but we want the path
+    cache::find_cached(&hash, &wp_path)
+        .ok_or_else(|| "cached wallpaper not found after recolor".to_string())
+}
+
+/// Set a specific cached wallpaper path as the current wallpaper.
+#[allow(dead_code)]
+pub fn set_cached_wallpaper(path: &std::path::Path) -> Result<(), String> {
+    wallpaper::set_wallpaper(path)
+}

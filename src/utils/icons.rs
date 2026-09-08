@@ -219,6 +219,7 @@ pub fn icon_theme_dir_for(name: &str) -> PathBuf {
 }
 
 /// Check if the icon theme folder for a given theme name already exists.
+#[allow(dead_code)]
 pub fn theme_folder_exists(name: &str) -> bool {
     icon_theme_dir_for(name).exists()
 }
@@ -264,9 +265,6 @@ pub fn recolor_image(
 /// Recolor all icons from the base theme and write to the per-theme output dir.
 /// Only processes scalable/ SVGs — GTK rasterizes them to whatever size is needed.
 pub fn recolor_icons(theme_name: &str, verbose: bool) -> Result<String, String> {
-    // Small delay to let Noctalia finish writing colors.json after a theme change
-    std::thread::sleep(std::time::Duration::from_millis(300));
-
     let (_, theme_content) = theme::read_theme()?;
     let theme_data = parse_theme(&theme_content)
         .ok_or_else(|| "failed to parse theme from colors.json".to_string())?;
