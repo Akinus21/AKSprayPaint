@@ -32,8 +32,10 @@ pub fn write_border_config(theme: &crate::gtkd::theme::NoctaliaTheme) -> Result<
     let active = format!("{:02x}{:02x}{:02x}", r1, g1, b1);
     let inactive = format!("{:02x}{:02x}{:02x}", r2, g2, b2);
 
+    // Include file has raw properties only — no `layout {}` or `border {}` wrapper.
+    // When included, these merge into the main config's `layout {}` block.
     let kdl = format!(
-        "layout {{\n    border {{\n        active-color \"#{active}\"\n        inactive-color \"#{inactive}\"\n    }}\n}}\n"
+        "active-color \"#{active}\"\ninactive-color \"#{inactive}\"\n"
     );
 
     let path = border_config_path();
