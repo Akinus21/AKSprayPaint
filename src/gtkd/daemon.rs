@@ -49,8 +49,18 @@ pub fn run(config: GtkBridgeConfig) -> Result<(), String> {
                 theme_state.icon_theme, new_theme.icon_theme
             );
 
-            // Recolor icons if enabled — do this BEFORE updating theme_state
-            // so we use the NEW theme name for the folder, not the old one
+            // Re-inject running instances with the CURRENT theme state FIRST.
+            // This corrects nemo's icons immediately.
+            // THEN spawn background recolor to prepare the NEW theme's folder.
+            for (pid, comm) in &running {
+                let settings = build_settings(&config, &theme_state);
+                eprintln!("[gtkd] re-injecting into {} (PID {})", comm, pid);
+                inject_async(*pid, settings);
+            }
+
+            // Spawn background recolor for the NEW theme folder (for next time).
+            // This does NOT affect the current injection since we already injected
+            // with theme_state above.
             if config.settings.icons {
                 let theme_arg = new_theme.icon_theme_name().to_owned();
                 eprintln!("[gtkd] recoloring icons for new theme...");
@@ -76,14 +86,8 @@ pub fn run(config: GtkBridgeConfig) -> Result<(), String> {
                 });
             }
 
-            // Re-detect theme AFTER recolor so icon_theme matches the folder we just created
-            theme_state = ThemeState::detect();
-
-            for (pid, comm) in &running {
-                let settings = build_settings(&config, &theme_state);
-                eprintln!("[gtkd] re-injecting into {} (PID {})", comm, pid);
-                inject_async(*pid, settings);
-            }
+            // Update theme state to the new theme for next iteration
+            theme_state = new_theme;
             continue;
         }
 
