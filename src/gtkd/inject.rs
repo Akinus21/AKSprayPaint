@@ -112,16 +112,21 @@ pub fn inject_settings(pid: u32, settings: &[Setting]) -> Result<(), String> {
         return Ok(());
     }
 
-    let mut calls = Vec::new();
-    for setting in settings {
-        calls.push(setting.gdb_call());
-    }
-    calls.push("detach".to_string());
+    let mut args = vec![
+        "-p".to_string(),
+        pid.to_string(),
+        "-batch".to_string(),
+    ];
 
-    let script = calls.join("\n");
+    for setting in settings {
+        args.push("-ex".to_string());
+        args.push(setting.gdb_call());
+    }
+    args.push("-ex".to_string());
+    args.push("detach".to_string());
 
     let output = Command::new("gdb")
-        .args(["-p", &pid.to_string(), "-batch", "-ex", &script])
+        .args(&args)
         .output()
         .map_err(|e| format!("failed to run gdb: {}", e))?;
 
