@@ -23,17 +23,31 @@ pub fn run(config: GtkBridgeConfig) -> Result<(), String> {
     );
     eprintln!("[gtkd] initial theme: {:?}", theme_state.icon_theme);
 
-    // Skip injecting into already-running apps at startup.
-    // They may not have fully initialized their GTK state yet.
-    // The new-launch path (with grace period) handles them when they start.
+    // Inject into already-running apps with the same grace period as new launches.
+    // Do NOT mark as injected until the thread actually completes injection.
     let running = scan_running(&config.watch.apps);
     for (pid, comm) in &running {
         eprintln!(
-            "[gtkd] found already-running {} (PID {}), will inject when it restarts",
-            comm, pid
+            "[gtkd] found already-running {} (PID {}), scheduling injection in {}ms...",
+            comm, pid,
+            grace_period.as_millis()
         );
-        injected_pids.insert(*pid);
+        let settings = build_settings(&config, &theme_state);
+        let pid_val = *pid;
+        let comm_val = comm.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(grace_period);
+            eprintln!("[gtkd] injecting into already-running {} (PID {})", comm_val, pid_val);
+            inject_async(pid_val, settings);
+        });
+        // Don't mark here — let the thread mark when it actually injects
+        // But we need to track it so we don't double-schedule, so mark immediately
+        // BUT: mark AFTER the spawn so the race window is tiny
         watched_apps.mark_injected(*pid);
+    }
+    // Track all found PIDs as "seen" to avoid double-scheduling in the loop
+    for (pid, _) in &running {
+        injected_pids.insert(*pid);
     }
 
     loop {
@@ -51,16 +65,10 @@ pub fn run(config: GtkBridgeConfig) -> Result<(), String> {
 
             let new_theme_name = new_theme.icon_theme_name();
 
-            // If the new theme's folder already exists, inject with new immediately.
-            // Otherwise, inject with current (old) theme now, spawn recolor for new in background.
-            let (inject_theme, do_recolor) =
-                if crate::utils::icons::theme_folder_exists(&new_theme_name) {
-                    // Folder exists — inject with new theme right away
-                    (new_theme.clone(), false)
-                } else {
-                    // Folder doesn't exist — inject with current, recolor new in background
-                    (theme_state.clone(), true)
-                };
+            // Always inject with the NEW theme — whether folder exists or not.
+            // If folder doesn't exist, we inject the new theme AND spawn background recolor.
+            let do_recolor = !crate::utils::icons::theme_folder_exists(&new_theme_name);
+            let inject_theme = new_theme.clone();
 
             for (pid, comm) in &running {
                 let settings = build_settings(&config, &inject_theme);
