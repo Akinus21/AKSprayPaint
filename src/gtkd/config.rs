@@ -17,6 +17,8 @@ pub struct SettingsToggle {
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct WatchConfig {
     pub apps: Vec<String>,
+    /// Restart each watched app after injecting settings so it picks up the new theme.
+    pub restart_after_inject: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
