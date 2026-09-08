@@ -52,26 +52,28 @@ pub fn run(config: GtkBridgeConfig) -> Result<(), String> {
             // Recolor icons if enabled — do this BEFORE updating theme_state
             // so we use the NEW theme name for the folder, not the old one
             if config.settings.icons {
+                let theme_arg = new_theme.icon_theme_name().to_owned();
                 eprintln!("[gtkd] recoloring icons for new theme...");
-                let theme_arg = new_theme.icon_theme_name();
-                let recolor_out = std::process::Command::new("akspraypaint")
-                    .args(["icons", "recolor", "--theme", &theme_arg])
-                    .output();
-                match recolor_out {
-                    Ok(out) if out.status.success() => {
-                        eprintln!("[gtkd] icon recolor done");
+                std::thread::spawn(move || {
+                    let recolor_out = std::process::Command::new("akspraypaint")
+                        .args(["icons", "recolor", "--theme", &theme_arg])
+                        .output();
+                    match recolor_out {
+                        Ok(out) if out.status.success() => {
+                            eprintln!("[gtkd] icon recolor done");
+                        }
+                        Ok(out) => {
+                            eprintln!(
+                                "[gtkd] icon recolor failed ({}): {}",
+                                out.status,
+                                String::from_utf8_lossy(&out.stderr)
+                            );
+                        }
+                        Err(e) => {
+                            eprintln!("[gtkd] icon recolor error: {}", e);
+                        }
                     }
-                    Ok(out) => {
-                        eprintln!(
-                            "[gtkd] icon recolor failed ({}): {}",
-                            out.status,
-                            String::from_utf8_lossy(&out.stderr)
-                        );
-                    }
-                    Err(e) => {
-                        eprintln!("[gtkd] icon recolor error: {}", e);
-                    }
-                }
+                });
             }
 
             // Re-detect theme AFTER recolor so icon_theme matches the folder we just created

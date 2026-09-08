@@ -99,7 +99,7 @@ pub fn build_settings(config: &GtkBridgeConfig, theme: &ThemeState) -> Vec<Setti
     if st.color_scheme {
         settings.push(Setting {
             property: GtkSetting::ColorScheme,
-            value: if theme.is_dark { "1" } else { "0" }.to_string(),
+            value: "1".to_string(),
         });
     }
 
