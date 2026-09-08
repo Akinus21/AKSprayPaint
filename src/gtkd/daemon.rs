@@ -96,7 +96,9 @@ pub fn run(config: GtkBridgeConfig) -> Result<(), String> {
                 continue;
             }
 
+            // Mark injected BEFORE spawning so we don't double-schedule the same PID
             let pid_val = *pid;
+            injected_pids.insert(pid_val);
             let comm_val = comm.clone();
             let settings = build_settings(&config, &theme_state);
             let grace = grace_period;
@@ -114,7 +116,6 @@ pub fn run(config: GtkBridgeConfig) -> Result<(), String> {
                 inject_async(pid_val, settings);
             });
 
-            injected_pids.insert(pid_val);
             watched_apps.mark_injected(pid_val);
         }
 
