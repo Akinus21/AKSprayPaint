@@ -56,8 +56,8 @@ enum Command {
     Upgrade,
     /// Open the GTK bridge daemon config in $EDITOR
     Config,
-    /// Run the GTK bridge daemon ( Akspraypaint-gtkd)
-    GtKd,
+    /// Run the GTK bridge daemon
+    Gtkd { #[clap(skip)] _unit: () },
 }
 
 #[derive(Subcommand)]
@@ -124,7 +124,7 @@ fn main() -> Result<(), String> {
             }
             Ok(())
         }
-        Command::GtKd => {
+        Command::Gtkd { .. } => {
             let config = match gtkd::config::GtkBridgeConfig::load_or_create(
                 &gtkd::config::default_path(),
             ) {

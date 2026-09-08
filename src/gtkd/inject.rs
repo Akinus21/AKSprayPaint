@@ -118,7 +118,7 @@ pub fn inject_settings(pid: u32, settings: &[Setting]) -> Result<(), String> {
     }
     calls.push("detach".to_string());
 
-    let script = calls.join("\\n               ");
+    let script = calls.join("\n");
 
     let output = Command::new("gdb")
         .args(["-p", &pid.to_string(), "-batch", "-ex", &script])
