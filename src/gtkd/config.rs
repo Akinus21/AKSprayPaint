@@ -21,10 +21,19 @@ pub struct WatchConfig {
     pub restart_after_inject: bool,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PollConfig {
     pub interval_ms: u64,
     pub launch_grace_ms: u64,
+}
+
+impl Default for PollConfig {
+    fn default() -> Self {
+        Self {
+            interval_ms: 1000,
+            launch_grace_ms: 2500,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
