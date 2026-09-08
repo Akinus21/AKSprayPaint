@@ -1,57 +1,91 @@
 //! Niri window border recoloring.
 //!
-//! Writes border colors to ~/.config/niri/noctalia.kdl from the active
-//! Noctalia palette, then signals niri to reload via:
-//!   niri msg action load-config-file
-//!
-//! This is safe — it only edits a config file and sends a socket msg,
-//! does NOT kill or restart niri.
+//! Edits ~/.config/niri/config.kdl in-place to update border colors.
+//! Creates a backup at ~/.config/niri/config.kdl.bak before editing.
 
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
-/// Path to the niri border colors include file.
-pub fn border_config_path() -> PathBuf {
+/// Path to the niri config file.
+fn config_path() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".config")
         .join("niri")
-        .join("noctalia.kdl")
+        .join("config.kdl")
 }
 
-/// Write border colors from a NoctaliaTheme to the niri include file.
-/// The file is included by niri's config.kdl via `include "noctalia.kdl"`.
-pub fn write_border_config(theme: &crate::gtkd::theme::NoctaliaTheme) -> Result<(), String> {
-    // Border color = on_surface_variant (the readable text color on dark bg)
-    let [r1, g1, b1] = theme.on_surface_variant;
-    // Inactive border = surface_variant (dimmer)
-    let [r2, g2, b2] = theme.surface_variant;
+/// Update border colors in the niri config file.
+/// Reads config.kdl, replaces active-color and inactive-color in the border block,
+/// writes back. Creates a .bak backup first.
+pub fn update_border_colors(
+    active_color: [u8; 3],
+    inactive_color: [u8; 3],
+) -> Result<(), String> {
+    let path = config_path();
 
-    // Format hex colors without the # prefix to avoid format syntax issues
-    let active = format!("{:02x}{:02x}{:02x}", r1, g1, b1);
-    let inactive = format!("{:02x}{:02x}{:02x}", r2, g2, b2);
+    // Read original
+    let content = fs::read_to_string(&path)
+        .map_err(|e| format!("failed to read {}: {}", path.display(), e))?;
 
-    // Include file has raw properties only — no `layout {}` or `border {}` wrapper.
-    // When included, these merge into the main config's `layout {}` block.
-    let kdl = format!(
-        "active-color \"#{active}\"\ninactive-color \"#{inactive}\"\n"
-    );
+    // Create backup
+    let bak_path = format!("{}.bak", path.display());
+    fs::write(&bak_path, &content)
+        .map_err(|e| format!("failed to write backup: {}", e))?;
 
-    let path = border_config_path();
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("failed to create niri config dir: {}", e))?;
-    }
-    fs::write(&path, kdl).map_err(|e| format!("failed to write {}: {}", path.display(), e))?;
+    // Format new colors
+    let active = format!("{:02x}{:02x}{:02x}", active_color[0], active_color[1], active_color[2]);
+    let inactive = format!("{:02x}{:02x}{:02x}", inactive_color[0], inactive_color[1], inactive_color[2]);
 
-    eprintln!("[gtkd] wrote niri border config to {}", path.display());
+    // Replace active-color and inactive-color in the border block
+    // Handle both "hex" and hex formats
+    let updated = replace_color_in_border(&content, &active, &inactive);
+
+    // Write back
+    fs::write(&path, updated)
+        .map_err(|e| format!("failed to write {}: {}", path.display(), e))?;
+
+    eprintln!("[gtkd] updated niri border colors (backup: {}.bak)", path.display());
     Ok(())
+}
+
+/// Replace active-color and inactive-color values in the border block.
+fn replace_color_in_border(content: &str, active: &str, inactive: &str) -> String {
+    // Match active-color lines: active-color "#rrggbb" or active-color rrggbb
+    // and inactive-color lines similarly.
+    // We replace the color value (the hex string) while keeping the format.
+    let mut result = content.to_string();
+
+    // Replace active-color values
+    // Pattern: active-color "xxxxxxxx" or active-color xxxxxxxx
+    let active_re = regex::Regex::new(r#"(active-color\s+")([^"]+)(")"#).unwrap();
+    result = active_re
+        .replace(&result, format!(r#"$1#{active}$3"#))
+        .to_string();
+
+    // Also handle bare hex (no quotes) - try to match 6 hex chars after active-color
+    let active_re2 = regex::Regex::new(r"(active-color\s+)([0-9a-fA-F]{6})").unwrap();
+    result = active_re2
+        .replace(&result, format!("$1#{active}"))
+        .to_string();
+
+    // Replace inactive-color values
+    let inactive_re = regex::Regex::new(r#"(inactive-color\s+")([^"]+)(")"#).unwrap();
+    result = inactive_re
+        .replace(&result, format!(r#"$1#{inactive}$3"#))
+        .to_string();
+
+    let inactive_re2 = regex::Regex::new(r"(inactive-color\s+)([0-9a-fA-F]{6})").unwrap();
+    result = inactive_re2
+        .replace(&result, format!("$1#{inactive}"))
+        .to_string();
+
+    result
 }
 
 /// Signal niri to reload its config via socket IPC.
 pub fn reload_niri_config() {
-    // Run with a timeout so it can't hang the daemon
     let output = Command::new("sh")
         .args(["-c", "timeout 3 niri msg action load-config-file || true"])
         .output();
@@ -70,5 +104,34 @@ pub fn reload_niri_config() {
         Err(e) => {
             eprintln!("[gtkd] niri msg error: {}", e);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_replace_color_quoted() {
+        let input = r##"layout {
+    border {
+        active-color "#ff0000"
+        inactive-color "#00ff00"
+    }
+}"##;
+        let result = replace_color_in_border(input, "aabbcc", "112233");
+        assert!(result.contains(r##"active-color "#aabbcc""##));
+        assert!(result.contains(r##"inactive-color "#112233""##));
+    }
+
+    #[test]
+    fn test_replace_color_bare() {
+        let input = r##"border {
+    active-color aabbcc
+    inactive-color 112233
+}"##;
+        let result = replace_color_in_border(input, "aabbcc", "112233");
+        assert!(result.contains("#aabbcc"));
+        assert!(result.contains("#112233"));
     }
 }

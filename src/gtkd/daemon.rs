@@ -51,8 +51,11 @@ pub fn run(config: GtkBridgeConfig) -> Result<(), String> {
 
             // Apply niri border colors
             if let Some(ref theme) = new_theme.noctalia_theme {
-                if let Err(e) = crate::gtkd::niri::write_border_config(theme) {
-                    eprintln!("[gtkd] niri border config failed: {}", e);
+                if let Err(e) = crate::gtkd::niri::update_border_colors(
+                    theme.on_surface_variant,
+                    theme.surface_variant,
+                ) {
+                    eprintln!("[gtkd] niri border update failed: {}", e);
                 } else {
                     crate::gtkd::niri::reload_niri_config();
                 }
