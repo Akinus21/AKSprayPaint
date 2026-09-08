@@ -59,6 +59,29 @@ pub fn run(config: GtkBridgeConfig) -> Result<(), String> {
                 }
             }
 
+            // Recolor icons if enabled and theme changed
+            if config.settings.icons {
+                eprintln!("[gtkd] recoloring icons for new theme...");
+                let recolor_out = std::process::Command::new("akspraypaint")
+                    .args(["icons", "recolor"])
+                    .output();
+                match recolor_out {
+                    Ok(out) if out.status.success() => {
+                        eprintln!("[gtkd] icon recolor done");
+                    }
+                    Ok(out) => {
+                        eprintln!(
+                            "[gtkd] icon recolor failed ({}): {}",
+                            out.status,
+                            String::from_utf8_lossy(&out.stderr)
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!("[gtkd] icon recolor error: {}", e);
+                    }
+                }
+            }
+
             for (pid, comm) in &running {
                 let settings = build_settings(&config, &theme_state);
                 eprintln!("[gtkd] re-injecting into {} (PID {})", comm, pid);
