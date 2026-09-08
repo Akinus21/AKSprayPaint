@@ -49,18 +49,6 @@ pub fn run(config: GtkBridgeConfig) -> Result<(), String> {
                 theme_state.icon_theme, new_theme.icon_theme
             );
 
-            // Apply niri border colors
-            if let Some(ref theme) = new_theme.noctalia_theme {
-                if let Err(e) = crate::gtkd::niri::update_border_colors(
-                    theme.on_surface_variant,
-                    theme.surface_variant,
-                ) {
-                    eprintln!("[gtkd] niri border update failed: {}", e);
-                } else {
-                    crate::gtkd::niri::reload_niri_config();
-                }
-            }
-
             // Recolor icons if enabled — do this BEFORE updating theme_state
             // so we use the NEW theme name for the folder, not the old one
             if config.settings.icons {
