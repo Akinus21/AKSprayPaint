@@ -19,7 +19,7 @@ dependencies = [
 
 [[package]]
 name = "akspraypaint"
-version = "0.0.127"
+version = "0.0.128"
 dependencies = [
  "clap",
  "dirs",

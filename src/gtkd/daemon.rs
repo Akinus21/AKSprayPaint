@@ -23,31 +23,17 @@ pub fn run(config: GtkBridgeConfig) -> Result<(), String> {
     );
     eprintln!("[gtkd] initial theme: {:?}", theme_state.icon_theme);
 
-    // Inject into already-running apps with the same grace period as new launches.
-    // Do NOT mark as injected until the thread actually completes injection.
+    // Don't inject into already-running apps at startup — the new-launch path
+    // (with grace period) will handle them when they next restart.
     let running = scan_running(&config.watch.apps);
     for (pid, comm) in &running {
         eprintln!(
-            "[gtkd] found already-running {} (PID {}), scheduling injection in {}ms...",
-            comm, pid,
-            grace_period.as_millis()
+            "[gtkd] found {} already-running {} (PID {}), will handle via restart path",
+            running.len(),
+            comm, pid
         );
-        let settings = build_settings(&config, &theme_state);
-        let pid_val = *pid;
-        let comm_val = comm.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(grace_period);
-            eprintln!("[gtkd] injecting into already-running {} (PID {})", comm_val, pid_val);
-            inject_async(pid_val, settings);
-        });
-        // Don't mark here — let the thread mark when it actually injects
-        // But we need to track it so we don't double-schedule, so mark immediately
-        // BUT: mark AFTER the spawn so the race window is tiny
-        watched_apps.mark_injected(*pid);
-    }
-    // Track all found PIDs as "seen" to avoid double-scheduling in the loop
-    for (pid, _) in &running {
         injected_pids.insert(*pid);
+        watched_apps.mark_injected(*pid);
     }
 
     loop {
