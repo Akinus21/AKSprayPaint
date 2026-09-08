@@ -143,15 +143,11 @@ pub fn inject_async(pid: u32, settings: Vec<Setting>) {
     std::thread::spawn(move || {
         match inject_settings(pid, &settings) {
             Ok(()) => {
-                eprintln!(
-                    "[gtkd] injected settings into PID {} ({})",
-                    pid,
-                    settings
-                        .iter()
-                        .map(|s| s.property.property_name())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                );
+                let details: Vec<String> = settings
+                    .iter()
+                    .map(|s| format!("{}={}", s.property.property_name(), s.value))
+                    .collect();
+                eprintln!("[gtkd] injected settings into PID {} ({})", pid, details.join(", "));
             }
             Err(e) => {
                 eprintln!("[gtkd] injection into PID {} failed: {}", pid, e);
