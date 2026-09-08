@@ -211,11 +211,16 @@ fn is_recolored_output(name: &str) -> bool {
 // --------------------------------------------------------------------------
 
 /// Return the output icon theme directory for a given theme name.
-fn icon_theme_dir_for(name: &str) -> PathBuf {
+pub fn icon_theme_dir_for(name: &str) -> PathBuf {
     dirs::data_dir()
         .unwrap_or_else(|| PathBuf::from("/home"))
         .join("icons")
         .join(name)
+}
+
+/// Check if the icon theme folder for a given theme name already exists.
+pub fn theme_folder_exists(name: &str) -> bool {
+    icon_theme_dir_for(name).exists()
 }
 
 // --------------------------------------------------------------------------

@@ -49,24 +49,30 @@ pub fn run(config: GtkBridgeConfig) -> Result<(), String> {
                 theme_state.icon_theme, new_theme.icon_theme
             );
 
-            // Re-inject running instances with the CURRENT theme state FIRST.
-            // This corrects nemo's icons immediately.
-            // THEN spawn background recolor to prepare the NEW theme's folder.
+            let new_theme_name = new_theme.icon_theme_name();
+
+            // If the new theme's folder already exists, inject with new immediately.
+            // Otherwise, inject with current (old) theme now, spawn recolor for new in background.
+            let (inject_theme, do_recolor) =
+                if crate::utils::icons::theme_folder_exists(&new_theme_name) {
+                    // Folder exists — inject with new theme right away
+                    (new_theme.clone(), false)
+                } else {
+                    // Folder doesn't exist — inject with current, recolor new in background
+                    (theme_state.clone(), true)
+                };
+
             for (pid, comm) in &running {
-                let settings = build_settings(&config, &theme_state);
+                let settings = build_settings(&config, &inject_theme);
                 eprintln!("[gtkd] re-injecting into {} (PID {})", comm, pid);
                 inject_async(*pid, settings);
             }
 
-            // Spawn background recolor for the NEW theme folder (for next time).
-            // This does NOT affect the current injection since we already injected
-            // with theme_state above.
-            if config.settings.icons {
-                let theme_arg = new_theme.icon_theme_name().to_owned();
+            if do_recolor {
                 eprintln!("[gtkd] recoloring icons for new theme...");
                 std::thread::spawn(move || {
                     let recolor_out = std::process::Command::new("akspraypaint")
-                        .args(["icons", "recolor", "--theme", &theme_arg])
+                        .args(["icons", "recolor", "--theme", &new_theme_name])
                         .output();
                     match recolor_out {
                         Ok(out) if out.status.success() => {
