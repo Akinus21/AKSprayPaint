@@ -264,10 +264,19 @@ pub fn recolor_image(
 /// Recolor all icons from the base theme and write to the per-theme output dir.
 /// Only processes scalable/ SVGs — GTK rasterizes them to whatever size is needed.
 pub fn recolor_icons(theme_name: &str, verbose: bool) -> Result<String, String> {
+    // Small delay to let Noctalia finish writing colors.json after a theme change
+    std::thread::sleep(std::time::Duration::from_millis(300));
+
     let (_, theme_content) = theme::read_theme()?;
     let theme_data = parse_theme(&theme_content)
         .ok_or_else(|| "failed to parse theme from colors.json".to_string())?;
     let hash = theme_hash_for_icons(&theme_data);
+
+    eprintln!(
+        "[recolor] palette loaded: primary=#{:02x}{:02x}{:02x} surface=#{:02x}{:02x}{:02x}",
+        theme_data.primary[0], theme_data.primary[1], theme_data.primary[2],
+        theme_data.surface[0], theme_data.surface[1], theme_data.surface[2]
+    );
     let base_theme = find_best_base_theme();
 
     let base_root = find_icon_theme_root(&base_theme)
