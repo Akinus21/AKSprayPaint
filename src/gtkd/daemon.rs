@@ -64,10 +64,16 @@ pub fn run(config: GtkBridgeConfig) -> Result<(), String> {
                 let theme_name = new_theme_name.clone();
                 eprintln!("[gtkd] recoloring icons for new theme (blocking)...");
                 let recolor_out = std::process::Command::new("akspraypaint")
-                    .args(["icons", "recolor", "--theme", &theme_name])
+                    .args(["icons", "recolor", "--theme", &theme_name, "--verbose"])
                     .output();
                 match recolor_out {
                     Ok(out) if out.status.success() => {
+                        let stdout = String::from_utf8_lossy(&out.stdout);
+                        if !stdout.is_empty() {
+                            for line in stdout.lines() {
+                                eprintln!("[recolor] {}", line);
+                            }
+                        }
                         eprintln!("[gtkd] icon recolor done");
                     }
                     Ok(out) => {
