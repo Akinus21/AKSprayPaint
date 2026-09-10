@@ -265,7 +265,9 @@ pub fn recolor_image(
 /// Recolor all icons from the base theme and write to the per-theme output dir.
 /// Only processes scalable/ SVGs — GTK rasterizes them to whatever size is needed.
 pub fn recolor_icons(theme_name: &str, verbose: bool) -> Result<String, String> {
-    let (_, theme_content) = theme::read_theme()?;
+    // Use read_theme_fresh to wait for Noctalia's write to actually land,
+    // avoiding the race where settings.toml is updated before colors.json.
+    let (_, theme_content) = theme::read_theme_fresh()?;
     let theme_data = parse_theme(&theme_content)
         .ok_or_else(|| "failed to parse theme from colors.json".to_string())?;
     let hash = theme_hash_for_icons(&theme_data);
@@ -991,5 +993,17 @@ source = \"custom\"";
         assert!(index.contains("Type=Scalable"), "missing Type=Scalable");
 
         std::fs::remove_dir_all(&tmp).ok();
+    }
+}
+
+#[cfg(test)]
+mod test_paths {
+    use super::*;
+    #[test]
+    fn test_icon_dir_path() {
+        let path = icon_theme_dir_for("Rosé_Pine");
+        eprintln!("icon_theme_dir_for(\"Rosé_Pine\") = {}", path.display());
+        let path_str = path.to_string_lossy();
+        assert!(path_str.contains("Ros"), "path should contain theme name, got: {}", path_str);
     }
 }
