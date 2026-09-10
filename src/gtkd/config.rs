@@ -13,6 +13,7 @@ pub struct SettingsToggle {
     pub cursor_theme: bool,
     pub font: bool,
     pub color_scheme: bool,
+    pub flatpak: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]

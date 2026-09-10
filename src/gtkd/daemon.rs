@@ -1,6 +1,7 @@
 //! Daemon main loop.
 
 use std::collections::HashSet;
+use std::process::Command;
 use std::time::Duration;
 
 use crate::commands::run::recolor_wallpaper_only;
@@ -8,6 +9,49 @@ use crate::gtkd::config::GtkBridgeConfig;
 use crate::gtkd::inject::{build_settings, inject_async};
 use crate::gtkd::theme::{has_changed, ThemeState};
 use crate::gtkd::watch::{scan_running, WatchedApps};
+
+/// Apply the icon theme to flatpak apps via:
+/// 1. `flatpak override --user --env=ICON_THEME=<theme>` — sets env var for all flatpaks
+/// 2. `dconf write /org/gnome/desktop/interface/icon-theme '"<theme>"'` — sets portal dconf for GTK4 apps
+///
+/// Both commands are non-fatal: warnings are printed but the function returns Ok.
+pub fn flatpak_apply_icon_theme(theme_name: &str) -> Result<(), String> {
+    // Set ICON_THEME env var for all flatpaks
+    let out = Command::new("flatpak")
+        .args([
+            "override",
+            "--user",
+            "--env",
+            &format!("ICON_THEME={}", theme_name),
+        ])
+        .output()
+        .map_err(|e| format!("failed to run flatpak: {}", e))?;
+
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        eprintln!("[gtkd] flatpak override warning: {}", stderr);
+    } else {
+        eprintln!("[gtkd] flatpak icon theme set to: {}", theme_name);
+    }
+
+    // Set dconf for portal-based GTK4 apps
+    let dconf_val = format!("'\"{}\"'", theme_name);
+    if let Ok(out) = Command::new("dconf")
+        .args([
+            "write",
+            "/org/gnome/desktop/interface/icon-theme",
+            &dconf_val,
+        ])
+        .output()
+    {
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            eprintln!("[gtkd] dconf warning: {}", stderr);
+        }
+    }
+
+    Ok(())
+}
 
 /// Main daemon run loop.
 pub fn run(config: GtkBridgeConfig) -> Result<(), String> {
@@ -97,7 +141,14 @@ pub fn run(config: GtkBridgeConfig) -> Result<(), String> {
                 inject_async(*pid, settings);
             }
 
-            // 4. Update theme state to the new theme for next iteration
+            // 4. Apply icon theme to flatpak apps (non-blocking, non-fatal)
+            if config.settings.flatpak {
+                if let Err(e) = flatpak_apply_icon_theme(&new_theme_name) {
+                    eprintln!("[gtkd] flatpak apply failed: {}", e);
+                }
+            }
+
+            // 5. Update theme state to the new theme for next iteration
             theme_state = new_theme;
             continue;
         }

@@ -1004,6 +1004,10 @@ mod test_paths {
         let path = icon_theme_dir_for("Rosé_Pine");
         eprintln!("icon_theme_dir_for(\"Rosé_Pine\") = {}", path.display());
         let path_str = path.to_string_lossy();
-        assert!(path_str.contains("Ros"), "path should contain theme name, got: {}", path_str);
+        assert!(
+            path_str.contains("Ros"),
+            "path should contain theme name, got: {}",
+            path_str
+        );
     }
 }

@@ -37,15 +37,17 @@ pub fn ensure_fresh_colors_json(baseline: &str) -> Result<String, String> {
     let path = theme_config_path().ok_or("colors.json not found")?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     loop {
-        let content =
-            std::fs::read_to_string(&path).map_err(|e| format!("failed to read colors.json: {}", e))?;
+        let content = std::fs::read_to_string(&path)
+            .map_err(|e| format!("failed to read colors.json: {}", e))?;
         if content != baseline {
             return Ok(content);
         }
         if std::time::Instant::now() >= deadline {
             // No fresh content after 2s — Noctalia may not update colors.json for
             // this source; proceed with what we have (better than infinite wait)
-            eprintln!("[theme] colors.json unchanged after 2s wait — proceeding with current content");
+            eprintln!(
+                "[theme] colors.json unchanged after 2s wait — proceeding with current content"
+            );
             return Ok(content);
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
