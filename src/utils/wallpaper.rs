@@ -2,6 +2,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub fn detect_wallpaper() -> Option<PathBuf> {
+    if let Some(path) = try_noctalia_msg() {
+        return Some(path);
+    }
     if let Some(path) = try_swww() {
         return Some(path);
     }
@@ -40,8 +43,22 @@ fn try_hyprpaper() -> Option<PathBuf> {
     None
 }
 
+fn try_noctalia_msg() -> Option<PathBuf> {
+    let output = Command::new("noctalia")
+        .args(["msg", "wallpaper-get"])
+        .output()
+        .ok()?;
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !stdout.is_empty() && stdout != "null" {
+        let path = PathBuf::from(&stdout);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    None
+}
+
 fn try_noctalia_cache() -> Option<PathBuf> {
-    // Try XDG config directory for noctalia config files
     if let Some(config_dir) = dirs::config_dir() {
         // Check for wallpaper path in noctalia config
         let noctalia_config = config_dir.join("noctalia").join("config.toml");
